@@ -1,0 +1,64 @@
+name: release
+
+# 推送 v 開頭的 tag（例如 v1.0.0）時自動建置並發佈 Release。
+# 手動補建也可以：到 Actions 頁面用 workflow_dispatch 指定 tag。
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要發佈的 tag（例如 v1.0.0）"
+        required: true
+
+# 建立 Release 與上傳 asset 需要寫入權限。
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 用 go.mod 裡的版本，跟專案保持一致。
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # 純 Go（CGO_ENABLED=0），在 Linux runner 上一次交叉編譯所有平台。
+      - name: Build cross-platform binaries
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          VERSION="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "Building $VERSION"
+          mkdir -p dist
+          targets=(
+            "linux/amd64"
+            "linux/arm64"
+            "windows/amd64"
+            "darwin/amd64"
+            "darwin/arm64"
+          )
+          for t in "${targets[@]}"; do
+            os="${t%/*}"; arch="${t#*/}"
+            out="dist/claude-status-${VERSION}-${os}-${arch}"
+            [ "$os" = "windows" ] && out="${out}.exe"
+            echo "  -> $out"
+            GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "-s -w" -o "$out" .
+          done
+          # 產生 SHA256 校驗檔，方便使用者驗證下載完整性。
+          ( cd dist && sha256sum * > checksums.txt )
+          ls -la dist
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # push tag 觸發時 tag_name 會自動帶入；workflow_dispatch 則用輸入值。
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
