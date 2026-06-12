@@ -29,6 +29,10 @@ build:
 run *flags:
     go run . serve --no-refresh {{flags}}
 
+# TUI（standalone 會 refresh token；web daemon 已在跑時請改用 --remote <url>）
+tui *flags:
+    go run . tui {{flags}}
+
 test:
     go test ./...
 

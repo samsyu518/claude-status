@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"html/template"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -26,6 +27,7 @@ import (
 	"go-gin-claude-status/internal/anthropic"
 	"go-gin-claude-status/internal/poller"
 	"go-gin-claude-status/internal/store"
+	"go-gin-claude-status/internal/tui"
 )
 
 //go:embed web/templates
@@ -44,8 +46,7 @@ func main() {
 	case "serve":
 		runServe(args)
 	case "tui":
-		fmt.Fprintln(os.Stderr, "tui is not implemented yet — see docs/TUI-HANDOFF.md")
-		os.Exit(2)
+		runTUI(args)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q (available: serve, tui)\n", cmd)
 		os.Exit(2)
@@ -93,6 +94,60 @@ func runServe(args []string) {
 	}()
 	log.Printf("serving %d account(s) on http://%s (poll interval %s)", len(accounts), *listen, *interval)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatal(err)
+	}
+}
+
+func runTUI(args []string) {
+	fl := flag.NewFlagSet("tui", flag.ExitOnError)
+	remote := fl.String("remote", "", "poll an already-running serve daemon at this base URL (e.g. http://127.0.0.1:8787) instead of touching credentials")
+	accountsDir := fl.String("accounts-dir", "accounts", "directory with one subdirectory per account, each holding "+anthropic.CredentialsFile)
+	interval := fl.Duration("poll-interval", 5*time.Minute, "upstream poll interval per account (min 180s)")
+	noRefresh := fl.Bool("no-refresh", false, "never refresh tokens (for dev/testing with borrowed credentials)")
+	fl.Parse(args)
+
+	// Alt-screen mode owns the terminal; stray poller/remote log lines would
+	// corrupt it. Fetch errors still reach the user via the store/snapshots.
+	log.SetOutput(io.Discard)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	var provider tui.SnapshotProvider
+	if *remote != "" {
+		// Remote mode: pure client, never opens credentials. Required when a
+		// web daemon is already running (single-use refresh tokens).
+		p, err := tui.NewRemoteProvider(ctx, *remote, 10*time.Second)
+		if err != nil {
+			log.SetOutput(os.Stderr)
+			log.Fatal(err)
+		}
+		provider = p
+	} else {
+		// Standalone mode: same startup as serve (discover → store → pollers).
+		if *interval < poller.MinInterval {
+			*interval = poller.MinInterval
+		}
+		client := anthropic.NewClient()
+		accounts, err := discoverAccounts(*accountsDir, client, *noRefresh)
+		if err != nil {
+			log.SetOutput(os.Stderr)
+			log.Fatal(err)
+		}
+		names := make([]string, len(accounts))
+		for i, acc := range accounts {
+			names[i] = acc.Name
+		}
+		st := store.New(names)
+		for _, acc := range accounts {
+			p := &poller.Poller{Account: acc, Client: client, Store: st, Interval: *interval}
+			go p.Run(ctx)
+		}
+		provider = st.Snapshots
+	}
+
+	if err := tui.Run(ctx, provider); err != nil {
+		log.SetOutput(os.Stderr)
 		log.Fatal(err)
 	}
 }

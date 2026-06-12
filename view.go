@@ -2,8 +2,8 @@ package main
 
 import (
 	"fmt"
-	"time"
 
+	"go-gin-claude-status/internal/format"
 	"go-gin-claude-status/internal/store"
 )
 
@@ -41,7 +41,7 @@ func buildView(snaps []store.Snapshot) viewData {
 			SubType: s.SubscriptionType,
 			Pending: s.FetchedAt.IsZero(),
 			Error:   s.Error,
-			Extra:   extraLine(s.ExtraUsage),
+			Extra:   format.ExtraLine(s.ExtraUsage),
 		}
 		if !s.FetchedAt.IsZero() {
 			card.FetchedAt = s.FetchedAt.Local().Format("15:04:05")
@@ -64,48 +64,20 @@ func appendRow(rows []rowVM, label string, w *store.Window) []rowVM {
 		Value:    int(w.Utilization + 0.5),
 		Class:    levelClass(w.Utilization),
 		Pct:      fmt.Sprintf("%.0f%%", w.Utilization),
-		ResetsIn: resetsIn(w.ResetsAt),
+		ResetsIn: format.ResetsIn(w.ResetsAt),
 		ResetsAt: w.ResetsAt.Local().Format("Mon 15:04"),
 	})
 }
 
+// levelClass maps a utilization percentage to its daisyUI progress colour,
+// reusing format.LevelOf so the thresholds live in one place.
 func levelClass(pct float64) string {
-	switch {
-	case pct > 80:
+	switch format.LevelOf(pct) {
+	case format.LevelHigh:
 		return "progress-error"
-	case pct >= 50:
+	case format.LevelWarn:
 		return "progress-warning"
 	default:
 		return "progress-success"
 	}
-}
-
-func resetsIn(t time.Time) string {
-	d := time.Until(t)
-	if d <= 0 {
-		return "resetting…"
-	}
-	d = d.Round(time.Minute)
-	switch {
-	case d >= 24*time.Hour:
-		return fmt.Sprintf("%dd %dh", int(d.Hours())/24, int(d.Hours())%24)
-	case d >= time.Hour:
-		return fmt.Sprintf("%dh %02dm", int(d.Hours()), int(d.Minutes())%60)
-	default:
-		return fmt.Sprintf("%dm", int(d.Minutes()))
-	}
-}
-
-func extraLine(x *store.ExtraUsage) string {
-	if x == nil || !x.IsEnabled {
-		return ""
-	}
-	line := "extra usage enabled"
-	if x.UsedCredits != nil && x.MonthlyLimit != nil {
-		line = fmt.Sprintf("extra usage: %.2f / %.2f credits", *x.UsedCredits, *x.MonthlyLimit)
-	}
-	if x.Utilization != nil {
-		line += fmt.Sprintf(" (%.0f%%)", *x.Utilization)
-	}
-	return line
 }
