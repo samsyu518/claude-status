@@ -1,0 +1,4 @@
+# OAuth credentials — never commit
+accounts/
+
+bin/

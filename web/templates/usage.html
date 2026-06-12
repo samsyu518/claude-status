@@ -1,0 +1,27 @@
+<div class="cards">
+{{range .Cards}}
+<article class="card account-card">
+  <div class="card-body">
+    <h2 class="card-title">
+      {{.Name}}
+      {{if .SubType}}<span class="badge badge-primary badge-soft">{{.SubType}}</span>{{end}}
+      {{if .Error}}<span class="badge badge-error" title="{{.Error}}">error</span>{{end}}
+    </h2>
+    {{if .Pending}}
+      {{if .Error}}<p class="muted">fetch failed: {{.Error}}</p>{{else}}<p class="muted">waiting for first fetch…</p>{{end}}
+    {{else}}
+      {{range .Rows}}
+      <div class="row" title="resets {{.ResetsAt}}">
+        <span class="label">{{.Label}}</span>
+        <progress class="progress {{.Class}}" value="{{.Value}}" max="100"></progress>
+        <span class="pct">{{.Pct}}</span>
+        <span class="muted reset">{{.ResetsIn}}</span>
+      </div>
+      {{end}}
+      {{if .Extra}}<p class="muted">{{.Extra}}</p>{{end}}
+      <p class="muted">updated {{.FetchedAt}}{{if .Error}} — showing last good data{{end}}</p>
+    {{end}}
+  </div>
+</article>
+{{end}}
+</div>

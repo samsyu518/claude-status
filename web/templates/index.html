@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Usage</title>
+<link rel="stylesheet" href="/static/daisyui.css">
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <h1>Claude Usage</h1>
+  <span class="muted">refreshes every 30s</span>
+</header>
+<main id="usage" hx-get="/partials/usage" hx-trigger="load delay:2s, every 30s" hx-swap="innerHTML">
+{{template "usage.html" .}}
+</main>
+</body>
+</html>
