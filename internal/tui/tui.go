@@ -7,6 +7,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -43,9 +44,22 @@ type LogReader interface {
 // Run starts the bubbletea program and blocks until the user quits or ctx is
 // cancelled. Pass a non-nil logs to show recent server log lines in host mode.
 func Run(ctx context.Context, b Backend, logs LogReader) error {
-	m := model{backend: b, snaps: b.Snapshots(), logs: logs}
+	loc, tzLabel := resolveTZ()
+	m := model{backend: b, snaps: b.Snapshots(), logs: logs, loc: loc, tzLabel: tzLabel}
 	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithContext(ctx)).Run()
 	return err
+}
+
+// resolveTZ returns a timezone location and display label for reset times.
+// Uses the TZ env var (IANA name) when set; falls back to the system local zone.
+func resolveTZ() (*time.Location, string) {
+	if tz := os.Getenv("TZ"); tz != "" {
+		if loc, err := time.LoadLocation(tz); err == nil {
+			return loc, tz
+		}
+	}
+	name, _ := time.Now().Zone()
+	return time.Local, name
 }
 
 type model struct {
@@ -54,6 +68,8 @@ type model struct {
 	width    int
 	logs     LogReader
 	logLines []string
+	loc      *time.Location
+	tzLabel  string
 }
 
 type tickMsg time.Time
@@ -96,7 +112,7 @@ func (m model) View() string {
 	}
 
 	for _, s := range m.snaps {
-		b.WriteString(renderAccount(s))
+		b.WriteString(renderAccount(s, m.loc, m.tzLabel))
 		b.WriteString("\n")
 	}
 
@@ -124,7 +140,7 @@ func truncate(s string, w int) string {
 	return s[:w]
 }
 
-func renderAccount(s store.Snapshot) string {
+func renderAccount(s store.Snapshot, loc *time.Location, tzLabel string) string {
 	var b strings.Builder
 
 	header := titleStyle.Render(s.Name)
@@ -145,10 +161,10 @@ func renderAccount(s store.Snapshot) string {
 		return b.String()
 	}
 
-	b.WriteString(renderRow("5h", s.FiveHour))
-	b.WriteString(renderRow("7d", s.SevenDay))
-	b.WriteString(renderRow("7d Opus", s.SevenDayOpus))
-	b.WriteString(renderRow("7d Sonnet", s.SevenDaySonnet))
+	b.WriteString(renderRow("5h", s.FiveHour, loc, tzLabel))
+	b.WriteString(renderRow("7d", s.SevenDay, loc, tzLabel))
+	b.WriteString(renderRow("7d Opus", s.SevenDayOpus, loc, tzLabel))
+	b.WriteString(renderRow("7d Sonnet", s.SevenDaySonnet, loc, tzLabel))
 
 	if extra := format.ExtraLine(s.ExtraUsage); extra != "" {
 		b.WriteString("  " + mutedStyle.Render(extra) + "\n")
@@ -162,15 +178,19 @@ func renderAccount(s store.Snapshot) string {
 	return b.String()
 }
 
-func renderRow(label string, w *store.Window) string {
+func renderRow(label string, w *store.Window, loc *time.Location, tzLabel string) string {
 	if w == nil {
 		return ""
+	}
+	resetsIn := format.ResetsIn(w.ResetsAt)
+	if loc != nil && !w.ResetsAt.IsZero() {
+		resetsIn += " · " + w.ResetsAt.In(loc).Format("3:04pm") + " (" + tzLabel + ")"
 	}
 	return fmt.Sprintf("  %-10s %s %3.0f%%   %s\n",
 		label,
 		renderBar(w.Utilization),
 		w.Utilization,
-		mutedStyle.Render(format.ResetsIn(w.ResetsAt)),
+		mutedStyle.Render(resetsIn),
 	)
 }
 

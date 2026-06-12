@@ -7,6 +7,19 @@
 <link rel="stylesheet" href="/static/daisyui.css">
 <link rel="stylesheet" href="/static/app.css">
 <script src="/static/htmx.min.js" defer></script>
+<script>
+function fmtResets() {
+  var tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  var fmt = new Intl.DateTimeFormat([], {hour: 'numeric', minute: '2-digit'});
+  document.querySelectorAll('[data-resets-at]').forEach(function(el) {
+    var d = new Date(el.dataset.resetsAt);
+    if (isNaN(d)) return;
+    el.textContent = 'resets ' + fmt.format(d) + ' (' + tz + ')';
+  });
+}
+document.addEventListener('DOMContentLoaded', fmtResets);
+document.addEventListener('htmx:afterSettle', fmtResets);
+</script>
 </head>
 <body>
 <header class="topbar">

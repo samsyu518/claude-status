@@ -63,7 +63,7 @@ func TestRenderAccount(t *testing.T) {
 		SevenDay:         &store.Window{Utilization: 85, ResetsAt: reset.Add(48 * time.Hour)},
 		FetchedAt:        time.Now(),
 	}
-	out := renderAccount(s)
+	out := renderAccount(s, nil, "")
 	for _, want := range []string{"work", "[max]", "5h", "33%", "7d", "85%", "1h 30m", "updated"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("rendered account missing %q in:\n%s", want, out)
@@ -81,7 +81,7 @@ func TestRenderAccountError(t *testing.T) {
 		FetchedAt: time.Now(),
 		Error:     "boom",
 	}
-	if out := renderAccount(s); !strings.Contains(out, "showing last good data") {
+	if out := renderAccount(s, nil, ""); !strings.Contains(out, "showing last good data") {
 		t.Errorf("error with prior data should note stale data, got:\n%s", out)
 	}
 }

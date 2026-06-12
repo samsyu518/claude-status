@@ -17,6 +17,7 @@
         <span class="pct">{{.Pct}}</span>
         <span class="muted reset">{{.ResetsIn}}</span>
       </div>
+      <p class="muted row-resets" data-resets-at="{{.ResetsAtISO}}"></p>
       {{end}}
       {{if .Extra}}<p class="muted">{{.Extra}}</p>{{end}}
       <p class="muted">updated {{.FetchedAt}}{{if .Error}} — showing last good data{{end}}</p>

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"time"
 
 	"go-gin-claude-status/internal/format"
 	"go-gin-claude-status/internal/store"
@@ -25,12 +26,13 @@ type cardVM struct {
 }
 
 type rowVM struct {
-	Label    string
-	Value    int    // 0–100 for <progress>
-	Class    string // daisyUI progress color modifier
-	Pct      string
-	ResetsIn string
-	ResetsAt string
+	Label       string
+	Value       int    // 0–100 for <progress>
+	Class       string // daisyUI progress color modifier
+	Pct         string
+	ResetsIn    string
+	ResetsAt    string // "Mon 15:04" for title attribute
+	ResetsAtISO string // RFC3339 UTC for JS timezone formatting
 }
 
 func buildView(snaps []store.Snapshot) viewData {
@@ -60,12 +62,13 @@ func appendRow(rows []rowVM, label string, w *store.Window) []rowVM {
 		return rows
 	}
 	return append(rows, rowVM{
-		Label:    label,
-		Value:    int(w.Utilization + 0.5),
-		Class:    levelClass(w.Utilization),
-		Pct:      fmt.Sprintf("%.0f%%", w.Utilization),
-		ResetsIn: format.ResetsIn(w.ResetsAt),
-		ResetsAt: w.ResetsAt.Local().Format("Mon 15:04"),
+		Label:       label,
+		Value:       int(w.Utilization + 0.5),
+		Class:       levelClass(w.Utilization),
+		Pct:         fmt.Sprintf("%.0f%%", w.Utilization),
+		ResetsIn:    format.ResetsIn(w.ResetsAt),
+		ResetsAt:    w.ResetsAt.Local().Format("Mon 15:04"),
+		ResetsAtISO: w.ResetsAt.UTC().Format(time.RFC3339),
 	})
 }
 

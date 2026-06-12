@@ -70,3 +70,9 @@ body {
   opacity: 0.65;
   font-size: 0.8rem;
 }
+
+.row-resets {
+  margin: -0.2rem 0 0.35rem;
+  text-align: right;
+  font-size: 0.73rem;
+}
