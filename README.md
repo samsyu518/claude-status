@@ -4,6 +4,18 @@ Self-hosted dashboard for watching your Claude subscription usage across **multi
 
 [中文說明](README_tw.md)
 
+## Screenshots
+
+**Web dashboard** — every account, every rate-limit window, live over WebSocket:
+
+![Web dashboard](docs/web.png)
+
+**Terminal UI** — the same data in your terminal (`./claude-status tui`):
+
+![Terminal UI](docs/tui.png)
+
+> The `personal` / `work` names are just labels you pick when logging in each account.
+
 ## Why this exists
 
 [Claude Code](https://claude.com/claude-code) stores a single OAuth login per session, so there's no convenient way to keep an eye on usage across several Claude subscriptions at once. `claude-status` manages each account's credentials independently and shows them all on one dashboard:

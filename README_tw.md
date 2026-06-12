@@ -4,6 +4,18 @@
 
 [English](README.md)
 
+## 畫面預覽
+
+**網頁儀表板** — 所有帳號、每個速率限制視窗，透過 WebSocket 即時更新：
+
+![網頁儀表板](docs/web.png)
+
+**終端 UI** — 同樣的資料顯示在終端機（`./claude-status tui`）：
+
+![終端 UI](docs/tui.png)
+
+> `personal`／`work` 只是你登入各帳號時自取的標籤。
+
 ## 為何需要此工具
 
 [Claude Code](https://claude.com/claude-code) 每個登入 session 只儲存一個 OAuth 登入，因此沒有方便的方式同時盯著多個 Claude 訂閱的用量。`claude-status` 獨立管理每個帳號的憑證，並把它們全部顯示在同一個儀表板：
