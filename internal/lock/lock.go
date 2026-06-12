@@ -10,11 +10,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"syscall"
 )
 
 // Info is the backend coordinate recorded inside the lock file.
@@ -52,18 +50,18 @@ func runtimeDir() string {
 	return os.TempDir()
 }
 
-// Acquire takes a non-blocking exclusive flock. ok is false (with nil error)
-// when another live process already holds it.
+// Acquire takes a non-blocking exclusive lock on the lock file. ok is false
+// (with nil error) when another live process already holds it. The actual
+// locking primitive is platform-specific (flock on Unix, LockFileEx on
+// Windows) — see tryLock in lock_unix.go / lock_windows.go.
 func Acquire(path string) (l *Lock, ok bool, err error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, false, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	ok, err = tryLock(f)
+	if err != nil || !ok {
 		f.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return nil, false, nil
-		}
 		return nil, false, err
 	}
 	return &Lock{f: f}, true, nil
