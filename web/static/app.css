@@ -76,3 +76,11 @@ body {
   text-align: right;
   font-size: 0.73rem;
 }
+
+.refresh-btn {
+  margin-left: auto;
+}
+
+.refresh-btn:disabled {
+  opacity: 0.6;
+}

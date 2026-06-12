@@ -1,6 +1,6 @@
 // Package tui renders the per-account usage dashboard in the terminal using
 // bubbletea. It reads from a Backend, which transparently is either the
-// in-process host store or a remote client — and may hand the host role over
+// in-process host server or a remote client — and may hand the host role over
 // underneath without the view caring.
 package tui
 
@@ -15,7 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"go-gin-claude-status/internal/format"
-	"go-gin-claude-status/internal/store"
+	"go-gin-claude-status/internal/view"
 )
 
 const barWidth = 20
@@ -45,7 +45,14 @@ type LogReader interface {
 // cancelled. Pass a non-nil logs to show recent server log lines in host mode.
 func Run(ctx context.Context, b Backend, logs LogReader) error {
 	loc, tzLabel := resolveTZ()
-	m := model{backend: b, snaps: b.Snapshots(), logs: logs, loc: loc, tzLabel: tzLabel}
+	m := model{
+		backend: b,
+		data:    b.View(),
+		logs:    logs,
+		loc:     loc,
+		tzLabel: tzLabel,
+		ctx:     ctx,
+	}
 	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithContext(ctx)).Run()
 	return err
 }
@@ -63,16 +70,19 @@ func resolveTZ() (*time.Location, string) {
 }
 
 type model struct {
-	backend  Backend
-	snaps    []store.Snapshot
-	width    int
-	logs     LogReader
-	logLines []string
-	loc      *time.Location
-	tzLabel  string
+	backend    Backend
+	data       view.Data
+	ctx        context.Context
+	width      int
+	logs       LogReader
+	logLines   []string
+	loc        *time.Location
+	tzLabel    string
+	refreshing bool
 }
 
 type tickMsg time.Time
+type refreshDoneMsg struct{}
 
 func tick() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
@@ -83,11 +93,14 @@ func (m model) Init() tea.Cmd { return tick() }
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tickMsg:
-		m.snaps = m.backend.Snapshots()
+		m.data = m.backend.View()
 		if m.logs != nil {
 			m.logLines = m.logs.Lines()
 		}
 		return m, tick()
+	case refreshDoneMsg:
+		m.refreshing = false
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		return m, nil
@@ -95,6 +108,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q", "esc", "ctrl+c":
 			return m, tea.Quit
+		case "r", "R":
+			if !m.refreshing {
+				m.refreshing = true
+				ctx := m.ctx
+				b := m.backend
+				return m, func() tea.Msg {
+					b.Refresh(ctx) //nolint:errcheck
+					return refreshDoneMsg{}
+				}
+			}
 		}
 	}
 	return m, nil
@@ -102,17 +125,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m model) View() string {
 	var b strings.Builder
+
+	help := "q to quit · r to refresh"
+	if m.refreshing {
+		help = "refreshing…"
+	}
 	b.WriteString(titleStyle.Render("claude-status") +
 		subTypeStyle.Render(" ["+m.backend.Mode()+"]") +
-		mutedStyle.Render("  ·  q to quit") + "\n\n")
+		mutedStyle.Render("  ·  "+help) + "\n\n")
 
-	if len(m.snaps) == 0 {
+	if len(m.data.Cards) == 0 {
 		b.WriteString(mutedStyle.Render("no accounts yet…") + "\n")
 		return b.String()
 	}
 
-	for _, s := range m.snaps {
-		b.WriteString(renderAccount(s, m.loc, m.tzLabel))
+	for _, card := range m.data.Cards {
+		b.WriteString(renderAccount(card, m.loc, m.tzLabel))
 		b.WriteString("\n")
 	}
 
@@ -140,56 +168,59 @@ func truncate(s string, w int) string {
 	return s[:w]
 }
 
-func renderAccount(s store.Snapshot, loc *time.Location, tzLabel string) string {
+func renderAccount(card view.Card, loc *time.Location, tzLabel string) string {
 	var b strings.Builder
 
-	header := titleStyle.Render(s.Name)
-	if s.SubscriptionType != "" {
-		header += " " + subTypeStyle.Render("["+s.SubscriptionType+"]")
+	header := titleStyle.Render(card.Name)
+	if card.SubType != "" {
+		header += " " + subTypeStyle.Render("["+card.SubType+"]")
 	}
-	if s.Error != "" {
+	if card.Error != "" {
 		header += " " + errorStyle.Render("(error)")
 	}
 	b.WriteString(header + "\n")
 
-	if s.FetchedAt.IsZero() {
-		if s.Error != "" {
-			b.WriteString("  " + errorStyle.Render("fetch failed: "+s.Error) + "\n")
+	if card.Pending {
+		if card.Error != "" {
+			b.WriteString("  " + errorStyle.Render("fetch failed: "+card.Error) + "\n")
 		} else {
 			b.WriteString("  " + mutedStyle.Render("waiting for first fetch…") + "\n")
 		}
 		return b.String()
 	}
 
-	b.WriteString(renderRow("5h", s.FiveHour, loc, tzLabel))
-	b.WriteString(renderRow("7d", s.SevenDay, loc, tzLabel))
-	b.WriteString(renderRow("7d Opus", s.SevenDayOpus, loc, tzLabel))
-	b.WriteString(renderRow("7d Sonnet", s.SevenDaySonnet, loc, tzLabel))
-
-	if extra := format.ExtraLine(s.ExtraUsage); extra != "" {
-		b.WriteString("  " + mutedStyle.Render(extra) + "\n")
+	for _, row := range card.Rows {
+		b.WriteString(renderRow(row, loc, tzLabel))
 	}
 
-	updated := "updated " + s.FetchedAt.Local().Format("15:04:05")
-	if s.Error != "" {
+	if card.Extra != "" {
+		b.WriteString("  " + mutedStyle.Render(card.Extra) + "\n")
+	}
+
+	updated := "updated " + card.FetchedAt
+	if card.Error != "" {
 		updated += " — showing last good data"
 	}
 	b.WriteString("  " + mutedStyle.Render(updated) + "\n")
 	return b.String()
 }
 
-func renderRow(label string, w *store.Window, loc *time.Location, tzLabel string) string {
-	if w == nil {
-		return ""
+func renderRow(row view.Row, loc *time.Location, tzLabel string) string {
+	// Recompute time-relative fields from the ISO timestamp so they stay live
+	// between backend pushes.
+	resetsIn := row.ResetsIn
+	if row.ResetsAtISO != "" {
+		if t, err := time.Parse(time.RFC3339, row.ResetsAtISO); err == nil {
+			resetsIn = format.ResetsIn(t)
+			if loc != nil {
+				resetsIn += " · " + resetClock(t, time.Now(), loc, tzLabel)
+			}
+		}
 	}
-	resetsIn := format.ResetsIn(w.ResetsAt)
-	if loc != nil && !w.ResetsAt.IsZero() {
-		resetsIn += " · " + resetClock(w.ResetsAt, time.Now(), loc, tzLabel)
-	}
-	return fmt.Sprintf("  %-10s %s %3.0f%%   %s\n",
-		label,
-		renderBar(w.Utilization),
-		w.Utilization,
+	return fmt.Sprintf("  %-10s %s %3s   %s\n",
+		row.Label,
+		renderBar(row.Value),
+		row.Pct,
 		mutedStyle.Render(resetsIn),
 	)
 }
@@ -216,7 +247,8 @@ func resetClock(resetsAt, now time.Time, loc *time.Location, tzLabel string) str
 	return local.Format(layout) + " (" + tzLabel + ")"
 }
 
-func renderBar(pct float64) string {
+func renderBar(value int) string {
+	pct := float64(value)
 	filled := int(pct/100*float64(barWidth) + 0.5)
 	filled = min(max(filled, 0), barWidth)
 	style := levelStyles[format.LevelOf(pct)]

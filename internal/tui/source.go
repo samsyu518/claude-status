@@ -2,43 +2,44 @@ package tui
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/gorilla/websocket"
+
 	"go-gin-claude-status/internal/lock"
-	"go-gin-claude-status/internal/store"
+	"go-gin-claude-status/internal/view"
 )
 
-// HostFunc brings up the in-process backend on the given listener and returns a
-// provider reading its store. It runs until ctx is cancelled. It is invoked at
-// most once per Source — when this process wins the backend role.
-type HostFunc func(ctx context.Context, ln net.Listener) (func() []store.Snapshot, error)
+// HostFunc brings up the in-process backend on the given listener. It runs
+// until ctx is cancelled. It is invoked at most once per Source — when this
+// process wins the backend role.
+type HostFunc func(ctx context.Context, ln net.Listener) error
 
 // Config drives a Source.
 //
-//   - Auto mode: BindAddr + URL + LockPath + Host all set. The Source either
-//     wins the lock and hosts, or attaches as a client to the running backend,
-//     and promotes itself on failover.
-//   - Remote mode: only URL set (BindAddr == ""). Pure client, never hosts,
-//     never touches the lock.
+//   - Auto mode: BindAddr + LockPath + Host all set. The Source either wins
+//     the lock and hosts, or attaches as a client to the running backend, and
+//     promotes itself on failover.
+//   - Remote mode: only RemoteURL set (BindAddr == ""). Pure client, never
+//     hosts, never touches the lock.
 type Config struct {
-	BindAddr string
-	URL      string
-	LockPath string
-	Host     HostFunc
-	Poll     time.Duration // client poll / failover-check interval (default 5s)
+	BindAddr  string
+	LockPath  string
+	Host      HostFunc
+	RemoteURL string // http://host:port  (remote/pure-client mode)
 }
 
-// Backend is what the TUI reads from. It hides whether this process is the host
-// or a client, and survives a host handover underneath.
+// Backend is what the TUI reads from. It hides whether this process is the
+// host or a client, and survives a host handover underneath.
 type Backend interface {
-	Snapshots() []store.Snapshot
+	View() view.Data
 	Mode() string // "host" | "client"
+	Refresh(ctx context.Context) error
 }
 
 // Source implements Backend with port/lock coordination and failover.
@@ -46,34 +47,45 @@ type Source struct {
 	cfg    Config
 	client *http.Client
 
-	mu     sync.RWMutex
-	mode   string
-	inproc func() []store.Snapshot // non-nil ⇒ we are the host
-	cached []store.Snapshot        // client: last good fetch
-	url    string                  // client: current backend endpoint
-	lk     *lock.Lock              // host: held for our lifetime
+	mu      sync.RWMutex
+	mode    string
+	cached  view.Data
+	wsURL   string
+	baseURL string
+	lk      *lock.Lock // non-nil ⇒ we are the host
 }
 
-// Connect establishes the backend role and starts the background loop.
+// Connect establishes the backend role, seeds the cached view with the first
+// WS frame, and starts the background maintenance loop.
 func Connect(ctx context.Context, cfg Config) (*Source, error) {
-	if cfg.Poll <= 0 {
-		cfg.Poll = 5 * time.Second
-	}
 	s := &Source{cfg: cfg, client: &http.Client{Timeout: 10 * time.Second}}
 
 	if cfg.BindAddr == "" { // explicit remote: pure client
-		s.url = cfg.URL
+		base := strings.TrimRight(cfg.RemoteURL, "/")
+		s.wsURL = "ws" + strings.TrimPrefix(base, "http") + "/ws"
+		s.baseURL = base
 		s.mode = "client"
-		snaps, err := s.fetch(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("remote %s: %w", s.url, err)
+	} else {
+		if err := s.decide(ctx); err != nil {
+			return nil, err
 		}
-		s.cached = snaps
-	} else if err := s.decide(ctx); err != nil {
-		return nil, err
 	}
 
-	go s.loop(ctx)
+	// Dial WS and read the first frame to seed cached before returning.
+	conn, err := s.dialWithRetry(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var data view.Data
+	if err := conn.ReadJSON(&data); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	s.mu.Lock()
+	s.cached = data
+	s.mu.Unlock()
+
+	go s.loop(ctx, conn)
 	return s, nil
 }
 
@@ -93,9 +105,13 @@ func (s *Source) decide(ctx context.Context) error {
 	// A live backend holds the lock — read where it serves and attach.
 	info, err := s.readInfoRetry()
 	if err != nil {
-		return fmt.Errorf("a backend holds the lock but its address is unreadable: %w", err)
+		return err
 	}
-	s.startClient(ctx, info.Addr)
+	s.mu.Lock()
+	s.mode = "client"
+	s.wsURL = "ws://" + info.Addr + "/ws"
+	s.baseURL = "http://" + info.Addr
+	s.mu.Unlock()
 	return nil
 }
 
@@ -104,43 +120,27 @@ func (s *Source) decide(ctx context.Context) error {
 func (s *Source) becomeHost(ctx context.Context, lk *lock.Lock) error {
 	ln, err := net.Listen("tcp", s.cfg.BindAddr)
 	if err != nil {
-		return fmt.Errorf("listen %s (port busy or held by a non–claude-status process?): %w", s.cfg.BindAddr, err)
+		return err
 	}
-	prov, err := s.cfg.Host(ctx, ln)
-	if err != nil {
+	if err := s.cfg.Host(ctx, ln); err != nil {
 		ln.Close()
 		return err
 	}
 	if err := lk.WriteInfo(lock.Info{Addr: s.cfg.BindAddr, PID: os.Getpid()}); err != nil {
-		ln.Close()
 		return err
 	}
 	s.mu.Lock()
 	s.mode = "host"
-	s.inproc = prov
+	s.wsURL = "ws://" + s.cfg.BindAddr + "/ws"
+	s.baseURL = "http://" + s.cfg.BindAddr
 	s.lk = lk
 	s.mu.Unlock()
 	return nil
 }
 
-func (s *Source) startClient(ctx context.Context, addr string) {
-	s.mu.Lock()
-	s.mode = "client"
-	s.url = "http://" + addr + "/api/usage"
-	s.mu.Unlock()
-	if snaps, err := s.fetch(ctx); err == nil {
-		s.mu.Lock()
-		s.cached = snaps
-		s.mu.Unlock()
-	}
-}
-
-func (s *Source) Snapshots() []store.Snapshot {
+func (s *Source) View() view.Data {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if s.inproc != nil {
-		return s.inproc()
-	}
 	return s.cached
 }
 
@@ -150,44 +150,107 @@ func (s *Source) Mode() string {
 	return s.mode
 }
 
-// loop polls the remote in client mode and, on failure, attempts to take over
-// the backend role. The host does nothing here (the TUI reads its store
-// directly each tick).
-func (s *Source) loop(ctx context.Context) {
-	t := time.NewTicker(s.cfg.Poll)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			s.mu.Lock()
-			if s.lk != nil {
-				s.lk.Release()
-				s.lk = nil
-			}
-			s.mu.Unlock()
-			return
-		case <-t.C:
-			s.mu.RLock()
-			host := s.inproc != nil
-			s.mu.RUnlock()
-			if host {
-				continue
-			}
-			if snaps, err := s.fetch(ctx); err == nil {
-				s.mu.Lock()
-				s.cached = snaps
-				s.mu.Unlock()
-				continue
-			}
-			if s.cfg.Host != nil && s.cfg.BindAddr != "" {
-				s.tryTakeover(ctx)
-			}
+func (s *Source) Refresh(ctx context.Context) error {
+	s.mu.RLock()
+	baseURL := s.baseURL
+	s.mu.RUnlock()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/refresh", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// loop maintains the WS connection, updating cached on each incoming frame.
+// On disconnect it attempts failover (client) or redialing (host), then
+// reconnects.
+func (s *Source) loop(ctx context.Context, conn *websocket.Conn) {
+	defer func() {
+		s.mu.Lock()
+		if s.lk != nil {
+			s.lk.Release()
+			s.lk = nil
 		}
+		s.mu.Unlock()
+	}()
+
+	for {
+		// Read frames from the current connection until it closes.
+		for {
+			var data view.Data
+			if err := conn.ReadJSON(&data); err != nil {
+				conn.Close()
+				break
+			}
+			s.mu.Lock()
+			s.cached = data
+			s.mu.Unlock()
+		}
+
+		if ctx.Err() != nil {
+			return
+		}
+
+		// Connection dropped. If we're a client, try to take over or re-point.
+		s.mu.RLock()
+		isHost := s.lk != nil
+		s.mu.RUnlock()
+
+		if !isHost {
+			s.tryTakeover(ctx)
+		}
+
+		if ctx.Err() != nil {
+			return
+		}
+
+		// Redial with retries.
+		var err error
+		if conn, err = s.dialWithRetry(ctx); err != nil {
+			return
+		}
+		// Seed cache with the first frame from the new connection.
+		var data view.Data
+		if err := conn.ReadJSON(&data); err != nil {
+			conn.Close()
+			continue
+		}
+		s.mu.Lock()
+		s.cached = data
+		s.mu.Unlock()
 	}
 }
 
-// tryTakeover races for the freed lock. The winner hosts; the rest re-point to
-// whoever won.
+// dialWithRetry dials wsURL, retrying briefly to handle the race where a
+// freshly-started server hasn't bound yet.
+func (s *Source) dialWithRetry(ctx context.Context) (*websocket.Conn, error) {
+	s.mu.RLock()
+	wsURL := s.wsURL
+	s.mu.RUnlock()
+	var (
+		conn *websocket.Conn
+		err  error
+	)
+	for range 20 {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		conn, _, err = websocket.DefaultDialer.DialContext(ctx, wsURL, nil)
+		if err == nil {
+			return conn, nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return nil, err
+}
+
+// tryTakeover races for the freed lock. The winner becomes host; the loser
+// re-points to whoever won.
 func (s *Source) tryTakeover(ctx context.Context) {
 	lk, ok, err := lock.Acquire(s.cfg.LockPath)
 	if err != nil {
@@ -201,32 +264,10 @@ func (s *Source) tryTakeover(ctx context.Context) {
 	}
 	if info, err := s.readInfoRetry(); err == nil && info.Addr != "" {
 		s.mu.Lock()
-		s.url = "http://" + info.Addr + "/api/usage"
+		s.wsURL = "ws://" + info.Addr + "/ws"
+		s.baseURL = "http://" + info.Addr
 		s.mu.Unlock()
 	}
-}
-
-func (s *Source) fetch(ctx context.Context) ([]store.Snapshot, error) {
-	s.mu.RLock()
-	url := s.url
-	s.mu.RUnlock()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status %s", resp.Status)
-	}
-	var snaps []store.Snapshot
-	if err := json.NewDecoder(resp.Body).Decode(&snaps); err != nil {
-		return nil, err
-	}
-	return snaps, nil
 }
 
 func (s *Source) readInfoRetry() (lock.Info, error) {

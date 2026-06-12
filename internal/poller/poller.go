@@ -24,21 +24,26 @@ type Poller struct {
 	Client   *anthropic.Client
 	Store    *store.Store
 	Interval time.Duration
+	Trigger  <-chan struct{} // optional; a receive triggers an immediate poll
 }
 
 // Run polls until ctx is cancelled. Failures back off exponentially (capped
 // at maxBackoff, or the server's Retry-After if longer) while the store keeps
-// serving the last good snapshot.
+// serving the last good snapshot. A receive on Trigger causes an immediate poll
+// and resets the periodic timer.
 func (p *Poller) Run(ctx context.Context) {
 	interval := max(p.Interval, MinInterval)
 	backoff := interval
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	for {
+		triggered := false
 		select {
 		case <-ctx.Done():
 			return
 		case <-timer.C:
+		case <-p.triggerCh():
+			triggered = true
 		}
 		if err := p.poll(ctx); err != nil {
 			if ctx.Err() != nil {
@@ -54,9 +59,16 @@ func (p *Poller) Run(ctx context.Context) {
 			timer.Reset(wait)
 			continue
 		}
+		_ = triggered
 		backoff = interval
 		timer.Reset(interval)
 	}
+}
+
+// triggerCh returns Trigger if set, or a nil channel (blocks forever, so the
+// select case is never chosen when no trigger is configured).
+func (p *Poller) triggerCh() <-chan struct{} {
+	return p.Trigger
 }
 
 func (p *Poller) poll(ctx context.Context) error {
