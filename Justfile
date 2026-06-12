@@ -25,16 +25,18 @@ login name:
 build:
     CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/claude-status .
 
-# 開發模式（絕不 refresh token，可安全借用既有憑證測試）
+# headless 後端開發模式（不 refresh token；log 寫到 ./log/claude-status.log）
 run *flags:
     go run . serve --no-refresh {{flags}}
 
-# TUI（預設指令）：第一個實例自動 host 後端、其餘自動當 client，開幾個都不會搶 refresh
+# TUI：第一個實例自動成為 host（log 面板顯示於帳號區下方），其餘當 client；host 掛掉時 client 自動升主
 tui *flags:
     go run . tui {{flags}}
 
+# 執行所有測試（含 race detector）
 test:
-    go test ./...
+    go test -race ./...
 
+# 格式化 + 靜態檢查
 fmt:
     gofmt -w . && go vet ./...
