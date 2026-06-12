@@ -184,21 +184,7 @@ func renderRow(label string, w *store.Window, loc *time.Location, tzLabel string
 	}
 	resetsIn := format.ResetsIn(w.ResetsAt)
 	if loc != nil && !w.ResetsAt.IsZero() {
-		local := w.ResetsAt.In(loc)
-		now := time.Now().In(loc)
-		sameDay := local.Year() == now.Year() && local.YearDay() == now.YearDay()
-		var layout string
-		switch {
-		case sameDay && local.Minute() == 0:
-			layout = "3pm"
-		case sameDay:
-			layout = "3:04pm"
-		case local.Minute() == 0:
-			layout = "Jan 2, 3pm"
-		default:
-			layout = "Jan 2, 3:04pm"
-		}
-		resetsIn += " · " + local.Format(layout) + " (" + tzLabel + ")"
+		resetsIn += " · " + resetClock(w.ResetsAt, time.Now(), loc, tzLabel)
 	}
 	return fmt.Sprintf("  %-10s %s %3.0f%%   %s\n",
 		label,
@@ -206,6 +192,28 @@ func renderRow(label string, w *store.Window, loc *time.Location, tzLabel string
 		w.Utilization,
 		mutedStyle.Render(resetsIn),
 	)
+}
+
+// resetClock formats the absolute reset time relative to now, both in loc.
+// Same calendar day → time only ("4pm" or "4:10pm").
+// Different day    → date + time ("Jun 15, 4am" or "Jun 15, 4:10pm").
+// Minutes are omitted when zero.
+func resetClock(resetsAt, now time.Time, loc *time.Location, tzLabel string) string {
+	local := resetsAt.In(loc)
+	nowLocal := now.In(loc)
+	sameDay := local.Year() == nowLocal.Year() && local.YearDay() == nowLocal.YearDay()
+	var layout string
+	switch {
+	case sameDay && local.Minute() == 0:
+		layout = "3pm"
+	case sameDay:
+		layout = "3:04pm"
+	case local.Minute() == 0:
+		layout = "Jan 2, 3pm"
+	default:
+		layout = "Jan 2, 3:04pm"
+	}
+	return local.Format(layout) + " (" + tzLabel + ")"
 }
 
 func renderBar(pct float64) string {

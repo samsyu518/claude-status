@@ -216,3 +216,56 @@ func TestConnectRemoteError(t *testing.T) {
 		t.Error("expected error connecting to a dead address")
 	}
 }
+
+func TestResetClock(t *testing.T) {
+	taipei, _ := time.LoadLocation("Asia/Taipei")
+	const label = "Asia/Taipei"
+
+	// fixed "now": 2026-06-12 10:00 Taipei
+	now := time.Date(2026, 6, 12, 10, 0, 0, 0, taipei)
+
+	cases := []struct {
+		name     string
+		resetsAt time.Time
+		want     string
+	}{
+		{
+			name:     "same day, exact hour",
+			resetsAt: time.Date(2026, 6, 12, 16, 0, 0, 0, taipei),
+			want:     "4pm (Asia/Taipei)",
+		},
+		{
+			name:     "same day, with minutes",
+			resetsAt: time.Date(2026, 6, 12, 16, 10, 0, 0, taipei),
+			want:     "4:10pm (Asia/Taipei)",
+		},
+		{
+			name:     "different day, exact hour",
+			resetsAt: time.Date(2026, 6, 15, 4, 0, 0, 0, taipei),
+			want:     "Jun 15, 4am (Asia/Taipei)",
+		},
+		{
+			name:     "different day, with minutes",
+			resetsAt: time.Date(2026, 6, 15, 4, 10, 0, 0, taipei),
+			want:     "Jun 15, 4:10am (Asia/Taipei)",
+		},
+		{
+			name:     "next day midnight",
+			resetsAt: time.Date(2026, 6, 13, 0, 0, 0, 0, taipei),
+			want:     "Jun 13, 12am (Asia/Taipei)",
+		},
+		{
+			name:     "cross year boundary",
+			resetsAt: time.Date(2027, 1, 1, 0, 0, 0, 0, taipei),
+			want:     "Jan 1, 12am (Asia/Taipei)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resetClock(tc.resetsAt, now, taipei, label)
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
