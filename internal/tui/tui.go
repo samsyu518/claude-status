@@ -184,7 +184,21 @@ func renderRow(label string, w *store.Window, loc *time.Location, tzLabel string
 	}
 	resetsIn := format.ResetsIn(w.ResetsAt)
 	if loc != nil && !w.ResetsAt.IsZero() {
-		resetsIn += " · " + w.ResetsAt.In(loc).Format("3:04pm") + " (" + tzLabel + ")"
+		local := w.ResetsAt.In(loc)
+		now := time.Now().In(loc)
+		sameDay := local.Year() == now.Year() && local.YearDay() == now.YearDay()
+		var layout string
+		switch {
+		case sameDay && local.Minute() == 0:
+			layout = "3pm"
+		case sameDay:
+			layout = "3:04pm"
+		case local.Minute() == 0:
+			layout = "Jan 2, 3pm"
+		default:
+			layout = "Jan 2, 3:04pm"
+		}
+		resetsIn += " · " + local.Format(layout) + " (" + tzLabel + ")"
 	}
 	return fmt.Sprintf("  %-10s %s %3.0f%%   %s\n",
 		label,

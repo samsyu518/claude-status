@@ -10,11 +10,17 @@
 <script>
 function fmtResets() {
   var tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  var fmt = new Intl.DateTimeFormat([], {hour: 'numeric', minute: '2-digit'});
   document.querySelectorAll('[data-resets-at]').forEach(function(el) {
     var d = new Date(el.dataset.resetsAt);
     if (isNaN(d)) return;
-    el.textContent = 'resets ' + fmt.format(d) + ' (' + tz + ')';
+    var now = new Date();
+    var sameDay = d.getFullYear() === now.getFullYear() &&
+                  d.getMonth()    === now.getMonth()    &&
+                  d.getDate()     === now.getDate();
+    var opts = {hour: 'numeric'};
+    if (!sameDay) { opts.month = 'short'; opts.day = 'numeric'; }
+    if (d.getMinutes() !== 0) opts.minute = '2-digit';
+    el.textContent = 'resets ' + new Intl.DateTimeFormat([], opts).format(d) + ' (' + tz + ')';
   });
 }
 document.addEventListener('DOMContentLoaded', fmtResets);
