@@ -6,7 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"go-gin-claude-status/internal/anthropic"
@@ -50,7 +50,7 @@ func (p *Poller) Run(ctx context.Context) {
 			if errors.As(err, &rl) && rl.RetryAfter > wait {
 				wait = rl.RetryAfter
 			}
-			log.Printf("[%s] poll failed: %v (next attempt in %s)", p.Account.Name, err, wait)
+			slog.Warn(fmt.Sprintf("[%s] poll failed: %v (next attempt in %s)", p.Account.Name, err, wait))
 			timer.Reset(wait)
 			continue
 		}
@@ -71,7 +71,7 @@ func (p *Poller) poll(ctx context.Context) error {
 		}
 		if err == nil {
 			p.Store.SetUsage(p.Account.Name, p.Account.SubscriptionType(), usage)
-			log.Printf("[%s] usage fetched: 5h %s, 7d %s", p.Account.Name, pct(usage.FiveHour), pct(usage.SevenDay))
+			slog.Info(fmt.Sprintf("[%s] usage fetched: 5h %s, 7d %s", p.Account.Name, pct(usage.FiveHour), pct(usage.SevenDay)))
 			return nil
 		}
 	}

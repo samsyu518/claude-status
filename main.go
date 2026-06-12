@@ -13,6 +13,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -27,6 +28,7 @@ import (
 
 	"go-gin-claude-status/internal/anthropic"
 	"go-gin-claude-status/internal/lock"
+	"go-gin-claude-status/internal/logbuf"
 	"go-gin-claude-status/internal/poller"
 	"go-gin-claude-status/internal/store"
 	"go-gin-claude-status/internal/tui"
@@ -53,6 +55,25 @@ func main() {
 		fmt.Fprintf(os.Stderr, "unknown command %q (available: serve, tui)\n", cmd)
 		os.Exit(2)
 	}
+}
+
+// activateLogging redirects the global slog default (and the bridged log
+// package) to extra and a persistent append-only file under logDir. On any
+// filesystem error it falls back to writing only to extra and logs a warning.
+func activateLogging(extra io.Writer, logDir string) {
+	w := extra
+	if err := os.MkdirAll(logDir, 0o700); err == nil {
+		f, err := os.OpenFile(filepath.Join(logDir, "claude-status.log"),
+			os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err == nil {
+			w = io.MultiWriter(extra, f)
+		} else {
+			slog.Warn("could not open log file, logging to output only", "err", err)
+		}
+	} else {
+		slog.Warn("could not create log dir, logging to output only", "err", err)
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelInfo})))
 }
 
 // startBackend wires the store, per-account pollers and HTTP API onto an
@@ -92,6 +113,7 @@ func runServe(args []string) {
 	accountsDir := fl.String("accounts-dir", "accounts", "directory with one subdirectory per account, each holding "+anthropic.CredentialsFile)
 	interval := fl.Duration("poll-interval", 5*time.Minute, "upstream poll interval per account (min 180s)")
 	noRefresh := fl.Bool("no-refresh", false, "never refresh tokens (for dev/testing with borrowed credentials)")
+	logDir := fl.String("log-dir", "log", "directory for the server log file")
 	fl.Parse(args)
 
 	lockPath, err := lock.PathFor(*accountsDir)
@@ -107,6 +129,7 @@ func runServe(args []string) {
 		log.Fatalf("a backend is already running at %s (pid %d)", info.Addr, info.PID)
 	}
 	defer lk.Release()
+	activateLogging(os.Stderr, *logDir)
 
 	ln, err := net.Listen("tcp", *listen)
 	if err != nil {
@@ -122,7 +145,7 @@ func runServe(args []string) {
 	if err := lk.WriteInfo(lock.Info{Addr: *listen, PID: os.Getpid()}); err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("serving on http://%s (poll interval %s)", *listen, max(*interval, poller.MinInterval))
+	slog.Info(fmt.Sprintf("serving on http://%s (poll interval %s)", *listen, max(*interval, poller.MinInterval)))
 	<-ctx.Done()
 }
 
@@ -133,11 +156,14 @@ func runTUI(args []string) {
 	accountsDir := fl.String("accounts-dir", "accounts", "directory with one subdirectory per account, each holding "+anthropic.CredentialsFile)
 	interval := fl.Duration("poll-interval", 5*time.Minute, "upstream poll interval per account (min 180s)")
 	noRefresh := fl.Bool("no-refresh", false, "never refresh tokens (for dev/testing with borrowed credentials)")
+	logDir := fl.String("log-dir", "log", "directory for the server log file")
 	fl.Parse(args)
 
-	// Alt-screen mode owns the terminal; stray poller log lines would corrupt
-	// it. Fetch errors still reach the user via the store/snapshots.
-	log.SetOutput(io.Discard)
+	ring := logbuf.New(200)
+
+	// Alt-screen mode owns the terminal; route slog to Discard until this
+	// process becomes host. Fetch errors still reach the user via snapshots.
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -148,15 +174,16 @@ func runTUI(args []string) {
 	} else {
 		lockPath, err := lock.PathFor(*accountsDir)
 		if err != nil {
-			log.SetOutput(os.Stderr)
-			log.Fatal(err)
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
 		}
-		accDir, iv, nr := *accountsDir, *interval, *noRefresh
+		logDirStr, accDir, iv, nr := *logDir, *accountsDir, *interval, *noRefresh
 		cfg = tui.Config{
 			BindAddr: *listen,
 			URL:      "http://" + *listen + "/api/usage",
 			LockPath: lockPath,
 			Host: func(ctx context.Context, ln net.Listener) (func() []store.Snapshot, error) {
+				activateLogging(ring, logDirStr)
 				st, err := startBackend(ctx, ln, accDir, iv, nr)
 				if err != nil {
 					return nil, err
@@ -168,12 +195,12 @@ func runTUI(args []string) {
 
 	b, err := tui.Connect(ctx, cfg)
 	if err != nil {
-		log.SetOutput(os.Stderr)
-		log.Fatal(err)
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
-	if err := tui.Run(ctx, b); err != nil {
-		log.SetOutput(os.Stderr)
-		log.Fatal(err)
+	if err := tui.Run(ctx, b, ring); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 }
 
@@ -189,7 +216,7 @@ func discoverAccounts(dir string, client *anthropic.Client, noRefresh bool) ([]*
 		}
 		credPath := filepath.Join(dir, e.Name(), anthropic.CredentialsFile)
 		if _, err := os.Stat(credPath); err != nil {
-			log.Printf("skipping %s: no %s", filepath.Join(dir, e.Name()), anthropic.CredentialsFile)
+			slog.Warn(fmt.Sprintf("skipping %s: no %s", filepath.Join(dir, e.Name()), anthropic.CredentialsFile))
 			continue
 		}
 		acc, err := anthropic.LoadAccount(e.Name(), credPath, client, noRefresh)

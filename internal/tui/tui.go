@@ -18,6 +18,7 @@ import (
 )
 
 const barWidth = 20
+const logTailLines = 8
 
 var (
 	titleStyle   = lipgloss.NewStyle().Bold(true)
@@ -33,18 +34,26 @@ var (
 	}
 )
 
+// LogReader provides buffered log lines for display in the TUI.
+// logbuf.Ring satisfies this interface automatically.
+type LogReader interface {
+	Lines() []string
+}
+
 // Run starts the bubbletea program and blocks until the user quits or ctx is
-// cancelled.
-func Run(ctx context.Context, b Backend) error {
-	m := model{backend: b, snaps: b.Snapshots()}
+// cancelled. Pass a non-nil logs to show recent server log lines in host mode.
+func Run(ctx context.Context, b Backend, logs LogReader) error {
+	m := model{backend: b, snaps: b.Snapshots(), logs: logs}
 	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithContext(ctx)).Run()
 	return err
 }
 
 type model struct {
-	backend Backend
-	snaps   []store.Snapshot
-	width   int
+	backend  Backend
+	snaps    []store.Snapshot
+	width    int
+	logs     LogReader
+	logLines []string
 }
 
 type tickMsg time.Time
@@ -59,6 +68,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tickMsg:
 		m.snaps = m.backend.Snapshots()
+		if m.logs != nil {
+			m.logLines = m.logs.Lines()
+		}
 		return m, tick()
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -87,7 +99,29 @@ func (m model) View() string {
 		b.WriteString(renderAccount(s))
 		b.WriteString("\n")
 	}
+
+	if m.backend.Mode() == "host" && len(m.logLines) > 0 {
+		b.WriteString("\n" + mutedStyle.Render("log") + "\n")
+		for _, ln := range tail(m.logLines, logTailLines) {
+			b.WriteString("  " + mutedStyle.Render(truncate(ln, m.width)) + "\n")
+		}
+	}
+
 	return b.String()
+}
+
+func tail(lines []string, n int) []string {
+	if len(lines) <= n {
+		return lines
+	}
+	return lines[len(lines)-n:]
+}
+
+func truncate(s string, w int) string {
+	if w <= 0 || len(s) <= w {
+		return s
+	}
+	return s[:w]
 }
 
 func renderAccount(s store.Snapshot) string {
