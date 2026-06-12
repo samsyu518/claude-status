@@ -1,18 +1,19 @@
 // claude-status: self-hosted multi-account Claude subscription usage
-// dashboard. `serve` (default) runs the web UI; `tui` is reserved for the
-// future bubbletea client (see docs/TUI-HANDOFF.md).
+// dashboard. The default command, `tui`, opens the terminal UI; the first
+// instance hosts the backend (the sole token refresher) and the rest attach to
+// it as clients. `serve` runs the same backend headless (web UI only).
 package main
 
 import (
 	"context"
 	"embed"
-	"errors"
 	"flag"
 	"fmt"
 	"html/template"
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -25,6 +26,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"go-gin-claude-status/internal/anthropic"
+	"go-gin-claude-status/internal/lock"
 	"go-gin-claude-status/internal/poller"
 	"go-gin-claude-status/internal/store"
 	"go-gin-claude-status/internal/tui"
@@ -38,7 +40,7 @@ var staticFS embed.FS
 
 func main() {
 	args := os.Args[1:]
-	cmd := "serve"
+	cmd := "tui"
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		cmd, args = args[0], args[1:]
 	}
@@ -53,6 +55,37 @@ func main() {
 	}
 }
 
+// startBackend wires the store, per-account pollers and HTTP API onto an
+// already-bound listener, serving until ctx is cancelled. It returns the store
+// so a TUI host can read snapshots in-process. Shared by `serve` (headless) and
+// the TUI host path; the caller owns the single-owner lock.
+func startBackend(ctx context.Context, ln net.Listener, accountsDir string, interval time.Duration, noRefresh bool) (*store.Store, error) {
+	if interval < poller.MinInterval {
+		interval = poller.MinInterval
+	}
+	client := anthropic.NewClient()
+	accounts, err := discoverAccounts(accountsDir, client, noRefresh)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, len(accounts))
+	for i, acc := range accounts {
+		names[i] = acc.Name
+	}
+	st := store.New(names)
+	for _, acc := range accounts {
+		p := &poller.Poller{Account: acc, Client: client, Store: st, Interval: interval}
+		go p.Run(ctx)
+	}
+	srv := &http.Server{Handler: newRouter(st)}
+	go func() {
+		<-ctx.Done()
+		srv.Close() // immediate close frees the port fast so failover can take over
+	}()
+	go srv.Serve(ln)
+	return st, nil
+}
+
 func runServe(args []string) {
 	fl := flag.NewFlagSet("serve", flag.ExitOnError)
 	listen := fl.String("listen", "127.0.0.1:8787", "address to bind (keep it on loopback)")
@@ -61,92 +94,84 @@ func runServe(args []string) {
 	noRefresh := fl.Bool("no-refresh", false, "never refresh tokens (for dev/testing with borrowed credentials)")
 	fl.Parse(args)
 
-	if *interval < poller.MinInterval {
-		log.Printf("poll-interval %s too low, clamping to %s", *interval, poller.MinInterval)
-		*interval = poller.MinInterval
-	}
-
-	client := anthropic.NewClient()
-	accounts, err := discoverAccounts(*accountsDir, client, *noRefresh)
+	lockPath, err := lock.PathFor(*accountsDir)
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	names := make([]string, len(accounts))
-	for i, acc := range accounts {
-		names[i] = acc.Name
+	lk, ok, err := lock.Acquire(lockPath)
+	if err != nil {
+		log.Fatal(err)
 	}
-	st := store.New(names)
+	if !ok {
+		info, _ := lock.ReadInfo(lockPath)
+		log.Fatalf("a backend is already running at %s (pid %d)", info.Addr, info.PID)
+	}
+	defer lk.Release()
+
+	ln, err := net.Listen("tcp", *listen)
+	if err != nil {
+		log.Fatalf("listen %s: %v", *listen, err)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	for _, acc := range accounts {
-		p := &poller.Poller{Account: acc, Client: client, Store: st, Interval: *interval}
-		go p.Run(ctx)
-	}
 
-	srv := &http.Server{Addr: *listen, Handler: newRouter(st)}
-	go func() {
-		<-ctx.Done()
-		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		srv.Shutdown(shutCtx)
-	}()
-	log.Printf("serving %d account(s) on http://%s (poll interval %s)", len(accounts), *listen, *interval)
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if _, err := startBackend(ctx, ln, *accountsDir, *interval, *noRefresh); err != nil {
 		log.Fatal(err)
 	}
+	if err := lk.WriteInfo(lock.Info{Addr: *listen, PID: os.Getpid()}); err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("serving on http://%s (poll interval %s)", *listen, max(*interval, poller.MinInterval))
+	<-ctx.Done()
 }
 
 func runTUI(args []string) {
 	fl := flag.NewFlagSet("tui", flag.ExitOnError)
-	remote := fl.String("remote", "", "poll an already-running serve daemon at this base URL (e.g. http://127.0.0.1:8787) instead of touching credentials")
+	listen := fl.String("listen", "127.0.0.1:8787", "shared backend address: bind it to host, or attach to whoever already holds it")
+	remote := fl.String("remote", "", "force pure client mode against this base URL (e.g. http://127.0.0.1:8787); never hosts, never touches credentials")
 	accountsDir := fl.String("accounts-dir", "accounts", "directory with one subdirectory per account, each holding "+anthropic.CredentialsFile)
 	interval := fl.Duration("poll-interval", 5*time.Minute, "upstream poll interval per account (min 180s)")
 	noRefresh := fl.Bool("no-refresh", false, "never refresh tokens (for dev/testing with borrowed credentials)")
 	fl.Parse(args)
 
-	// Alt-screen mode owns the terminal; stray poller/remote log lines would
-	// corrupt it. Fetch errors still reach the user via the store/snapshots.
+	// Alt-screen mode owns the terminal; stray poller log lines would corrupt
+	// it. Fetch errors still reach the user via the store/snapshots.
 	log.SetOutput(io.Discard)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	var provider tui.SnapshotProvider
+	var cfg tui.Config
 	if *remote != "" {
-		// Remote mode: pure client, never opens credentials. Required when a
-		// web daemon is already running (single-use refresh tokens).
-		p, err := tui.NewRemoteProvider(ctx, *remote, 10*time.Second)
-		if err != nil {
-			log.SetOutput(os.Stderr)
-			log.Fatal(err)
-		}
-		provider = p
+		cfg = tui.Config{URL: strings.TrimRight(*remote, "/") + "/api/usage"}
 	} else {
-		// Standalone mode: same startup as serve (discover → store → pollers).
-		if *interval < poller.MinInterval {
-			*interval = poller.MinInterval
-		}
-		client := anthropic.NewClient()
-		accounts, err := discoverAccounts(*accountsDir, client, *noRefresh)
+		lockPath, err := lock.PathFor(*accountsDir)
 		if err != nil {
 			log.SetOutput(os.Stderr)
 			log.Fatal(err)
 		}
-		names := make([]string, len(accounts))
-		for i, acc := range accounts {
-			names[i] = acc.Name
+		accDir, iv, nr := *accountsDir, *interval, *noRefresh
+		cfg = tui.Config{
+			BindAddr: *listen,
+			URL:      "http://" + *listen + "/api/usage",
+			LockPath: lockPath,
+			Host: func(ctx context.Context, ln net.Listener) (func() []store.Snapshot, error) {
+				st, err := startBackend(ctx, ln, accDir, iv, nr)
+				if err != nil {
+					return nil, err
+				}
+				return st.Snapshots, nil
+			},
 		}
-		st := store.New(names)
-		for _, acc := range accounts {
-			p := &poller.Poller{Account: acc, Client: client, Store: st, Interval: *interval}
-			go p.Run(ctx)
-		}
-		provider = st.Snapshots
 	}
 
-	if err := tui.Run(ctx, provider); err != nil {
+	b, err := tui.Connect(ctx, cfg)
+	if err != nil {
+		log.SetOutput(os.Stderr)
+		log.Fatal(err)
+	}
+	if err := tui.Run(ctx, b); err != nil {
 		log.SetOutput(os.Stderr)
 		log.Fatal(err)
 	}

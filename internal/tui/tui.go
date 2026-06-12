@@ -1,7 +1,7 @@
 // Package tui renders the per-account usage dashboard in the terminal using
-// bubbletea. It is fed by a SnapshotProvider so the same model drives both the
-// standalone mode (reads the in-process store) and the remote mode (polls a
-// running serve daemon over HTTP).
+// bubbletea. It reads from a Backend, which transparently is either the
+// in-process host store or a remote client — and may hand the host role over
+// underneath without the view caring.
 package tui
 
 import (
@@ -16,10 +16,6 @@ import (
 	"go-gin-claude-status/internal/format"
 	"go-gin-claude-status/internal/store"
 )
-
-// SnapshotProvider returns the latest snapshots. Calls must be cheap and
-// non-blocking — it is invoked on every tick.
-type SnapshotProvider func() []store.Snapshot
 
 const barWidth = 20
 
@@ -39,16 +35,16 @@ var (
 
 // Run starts the bubbletea program and blocks until the user quits or ctx is
 // cancelled.
-func Run(ctx context.Context, provider SnapshotProvider) error {
-	m := model{provider: provider, snaps: provider()}
+func Run(ctx context.Context, b Backend) error {
+	m := model{backend: b, snaps: b.Snapshots()}
 	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithContext(ctx)).Run()
 	return err
 }
 
 type model struct {
-	provider SnapshotProvider
-	snaps    []store.Snapshot
-	width    int
+	backend Backend
+	snaps   []store.Snapshot
+	width   int
 }
 
 type tickMsg time.Time
@@ -62,7 +58,7 @@ func (m model) Init() tea.Cmd { return tick() }
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tickMsg:
-		m.snaps = m.provider()
+		m.snaps = m.backend.Snapshots()
 		return m, tick()
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -78,7 +74,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m model) View() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("claude-status") + mutedStyle.Render("  ·  q to quit") + "\n\n")
+	b.WriteString(titleStyle.Render("claude-status") +
+		subTypeStyle.Render(" ["+m.backend.Mode()+"]") +
+		mutedStyle.Render("  ·  q to quit") + "\n\n")
 
 	if len(m.snaps) == 0 {
 		b.WriteString(mutedStyle.Render("no accounts yet…") + "\n")

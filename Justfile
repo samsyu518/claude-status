@@ -29,7 +29,7 @@ build:
 run *flags:
     go run . serve --no-refresh {{flags}}
 
-# TUI（standalone 會 refresh token；web daemon 已在跑時請改用 --remote <url>）
+# TUI（預設指令）：第一個實例自動 host 後端、其餘自動當 client，開幾個都不會搶 refresh
 tui *flags:
     go run . tui {{flags}}
 
