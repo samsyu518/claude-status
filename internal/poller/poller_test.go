@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"go-gin-claude-status/internal/anthropic"
+	"go-gin-claude-status/internal/refresh"
 	"go-gin-claude-status/internal/store"
 )
 
@@ -44,7 +45,7 @@ func TestPollRefreshesOn401(t *testing.T) {
 	client := anthropic.NewClient()
 	client.UsageURL = srv.URL + "/usage"
 	client.TokenURL = srv.URL + "/token"
-	acc, err := anthropic.LoadAccount("test", path, client, false)
+	acc, err := anthropic.LoadAccount("test", path, client, false, refresh.New(0))
 	if err != nil {
 		t.Fatal(err)
 	}

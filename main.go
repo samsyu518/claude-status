@@ -31,6 +31,7 @@ import (
 	"go-gin-claude-status/internal/lock"
 	"go-gin-claude-status/internal/logbuf"
 	"go-gin-claude-status/internal/poller"
+	"go-gin-claude-status/internal/refresh"
 	"go-gin-claude-status/internal/store"
 	"go-gin-claude-status/internal/tui"
 	"go-gin-claude-status/internal/view"
@@ -81,12 +82,13 @@ func activateLogging(extra io.Writer, logDir string) {
 // startBackend wires the store, per-account pollers and HTTP API onto an
 // already-bound listener, serving until ctx is cancelled. Shared by `serve`
 // (headless) and the TUI host path; the caller owns the single-owner lock.
-func startBackend(ctx context.Context, ln net.Listener, accountsDir string, interval, throttle time.Duration, noRefresh bool) error {
+func startBackend(ctx context.Context, ln net.Listener, accountsDir string, interval, throttle, refreshMin time.Duration, noRefresh bool) error {
 	if interval < poller.MinInterval {
 		interval = poller.MinInterval
 	}
 	client := anthropic.NewClient()
-	accounts, err := discoverAccounts(accountsDir, client, noRefresh)
+	gate := refresh.New(refreshMin)
+	accounts, err := discoverAccounts(accountsDir, client, noRefresh, gate)
 	if err != nil {
 		return err
 	}
@@ -151,6 +153,7 @@ func runServe(args []string) {
 	accountsDir := fl.String("accounts-dir", "accounts", "directory with one subdirectory per account, each holding "+anthropic.CredentialsFile)
 	interval := fl.Duration("poll-interval", 5*time.Minute, "upstream poll interval per account (min 180s)")
 	throttle := fl.Duration("refresh-throttle", 5*time.Second, "minimum time between manual refresh triggers")
+	refreshMin := fl.Duration("refresh-min-interval", time.Minute, "minimum gap between OAuth token refreshes across all accounts (serialized through one queue)")
 	noRefresh := fl.Bool("no-refresh", false, "never refresh tokens (for dev/testing with borrowed credentials)")
 	logDir := fl.String("log-dir", "log", "directory for the server log file")
 	fl.Parse(args)
@@ -178,7 +181,7 @@ func runServe(args []string) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := startBackend(ctx, ln, *accountsDir, *interval, *throttle, *noRefresh); err != nil {
+	if err := startBackend(ctx, ln, *accountsDir, *interval, *throttle, *refreshMin, *noRefresh); err != nil {
 		log.Fatal(err)
 	}
 	if err := lk.WriteInfo(lock.Info{Addr: *listen, PID: os.Getpid()}); err != nil {
@@ -195,6 +198,7 @@ func runTUI(args []string) {
 	accountsDir := fl.String("accounts-dir", "accounts", "directory with one subdirectory per account, each holding "+anthropic.CredentialsFile)
 	interval := fl.Duration("poll-interval", 5*time.Minute, "upstream poll interval per account (min 180s)")
 	throttle := fl.Duration("refresh-throttle", 5*time.Second, "minimum time between manual refresh triggers")
+	refreshMin := fl.Duration("refresh-min-interval", time.Minute, "minimum gap between OAuth token refreshes across all accounts (serialized through one queue)")
 	noRefresh := fl.Bool("no-refresh", false, "never refresh tokens (for dev/testing with borrowed credentials)")
 	logDir := fl.String("log-dir", "log", "directory for the server log file")
 	fl.Parse(args)
@@ -217,13 +221,13 @@ func runTUI(args []string) {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		logDirStr, accDir, iv, th, nr := *logDir, *accountsDir, *interval, *throttle, *noRefresh
+		logDirStr, accDir, iv, th, rmi, nr := *logDir, *accountsDir, *interval, *throttle, *refreshMin, *noRefresh
 		cfg = tui.Config{
 			BindAddr: *listen,
 			LockPath: lockPath,
 			Host: func(ctx context.Context, ln net.Listener) error {
 				activateLogging(ring, logDirStr)
-				return startBackend(ctx, ln, accDir, iv, th, nr)
+				return startBackend(ctx, ln, accDir, iv, th, rmi, nr)
 			},
 		}
 	}
@@ -239,7 +243,7 @@ func runTUI(args []string) {
 	}
 }
 
-func discoverAccounts(dir string, client *anthropic.Client, noRefresh bool) ([]*anthropic.Account, error) {
+func discoverAccounts(dir string, client *anthropic.Client, noRefresh bool, gate *refresh.Gate) ([]*anthropic.Account, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("accounts dir: %w (run `just login <name>` to create one)", err)
@@ -254,7 +258,7 @@ func discoverAccounts(dir string, client *anthropic.Client, noRefresh bool) ([]*
 			slog.Warn(fmt.Sprintf("skipping %s: no %s", filepath.Join(dir, e.Name()), anthropic.CredentialsFile))
 			continue
 		}
-		acc, err := anthropic.LoadAccount(e.Name(), credPath, client, noRefresh)
+		acc, err := anthropic.LoadAccount(e.Name(), credPath, client, noRefresh, gate)
 		if err != nil {
 			return nil, err
 		}

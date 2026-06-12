@@ -3,6 +3,7 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,8 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"go-gin-claude-status/internal/refresh"
 )
 
 func writeCreds(t *testing.T, expiresAt time.Time) string {
@@ -56,7 +59,7 @@ func TestTokenRefreshesWhenExpired(t *testing.T) {
 	path := writeCreds(t, time.Now().Add(-time.Hour))
 	c := NewClient()
 	c.TokenURL = srv.URL
-	a, err := LoadAccount("test", path, c, false)
+	a, err := LoadAccount("test", path, c, false, refresh.New(0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,6 +125,84 @@ func TestTokenRefreshesWhenExpired(t *testing.T) {
 	}
 }
 
+// rateLimitedTokenServer always returns 429, optionally with a Retry-After.
+func rateLimitedTokenServer(t *testing.T, calls *int, retryAfter string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*calls++
+		if retryAfter != "" {
+			w.Header().Set("Retry-After", retryAfter)
+		}
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, `{"error":{"type":"rate_limit_error","message":"Rate limited."}}`)
+	}))
+}
+
+// A 429 on the token endpoint must arm a cooldown: a single attempt is made,
+// and subsequent Token/Refresh calls return a RateLimitedError without hitting
+// the endpoint again, so a manual-refresh storm can't hammer it.
+func Test429ArmsCooldown(t *testing.T) {
+	calls := 0
+	srv := rateLimitedTokenServer(t, &calls, "60")
+	defer srv.Close()
+
+	path := writeCreds(t, time.Now().Add(-time.Hour)) // expired
+	c := NewClient()
+	c.TokenURL = srv.URL
+	a, err := LoadAccount("test", path, c, false, refresh.New(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = a.Token(context.Background())
+	var rl *RateLimitedError
+	if !errors.As(err, &rl) {
+		t.Fatalf("Token err = %v, want *RateLimitedError", err)
+	}
+	if calls != 1 {
+		t.Fatalf("refresh calls = %d, want 1", calls)
+	}
+	if rl.RetryAfter < 50*time.Second || rl.RetryAfter > 60*time.Second {
+		t.Errorf("RetryAfter = %v, want ~60s", rl.RetryAfter)
+	}
+
+	// Cooldown active: neither a periodic poll (Token) nor a 401-driven Refresh
+	// may touch the endpoint again.
+	if _, err = a.Token(context.Background()); !errors.As(err, &rl) {
+		t.Errorf("second Token err = %v, want *RateLimitedError", err)
+	}
+	if _, err = a.Refresh(context.Background(), "old-access"); !errors.As(err, &rl) {
+		t.Errorf("Refresh err = %v, want *RateLimitedError", err)
+	}
+	if calls != 1 {
+		t.Errorf("refresh calls after cooldown = %d, want 1 (no re-hits)", calls)
+	}
+}
+
+// When the proactive refresh fails but the token is still valid for the rest of
+// the skew window, Token must serve the existing token rather than fail.
+func TestProactiveRefreshFailureFallsBackToValidToken(t *testing.T) {
+	calls := 0
+	srv := rateLimitedTokenServer(t, &calls, "")
+	defer srv.Close()
+
+	// Inside the 5m skew but not yet expired.
+	path := writeCreds(t, time.Now().Add(2*time.Minute))
+	c := NewClient()
+	c.TokenURL = srv.URL
+	a, err := LoadAccount("test", path, c, false, refresh.New(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := a.Token(context.Background())
+	if err != nil || tok != "old-access" {
+		t.Fatalf("Token = %q, %v; want old-access serving through the 429", tok, err)
+	}
+	if calls != 1 {
+		t.Errorf("refresh calls = %d, want 1", calls)
+	}
+}
+
 func TestTokenValidSkipsRefresh(t *testing.T) {
 	calls := 0
 	srv := tokenServer(t, &calls)
@@ -130,7 +211,7 @@ func TestTokenValidSkipsRefresh(t *testing.T) {
 	path := writeCreds(t, time.Now().Add(time.Hour))
 	c := NewClient()
 	c.TokenURL = srv.URL
-	a, err := LoadAccount("test", path, c, false)
+	a, err := LoadAccount("test", path, c, false, refresh.New(0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +228,7 @@ func TestNoRefreshNeverRefreshes(t *testing.T) {
 	path := writeCreds(t, time.Now().Add(-time.Hour))
 	c := NewClient()
 	c.TokenURL = "http://127.0.0.1:1" // any request would fail loudly
-	a, err := LoadAccount("test", path, c, true)
+	a, err := LoadAccount("test", path, c, true, refresh.New(0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +249,7 @@ func TestRefreshSkipsWhenAlreadyRotated(t *testing.T) {
 	path := writeCreds(t, time.Now().Add(time.Hour))
 	c := NewClient()
 	c.TokenURL = srv.URL
-	a, err := LoadAccount("test", path, c, false)
+	a, err := LoadAccount("test", path, c, false, refresh.New(0))
 	if err != nil {
 		t.Fatal(err)
 	}
