@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -230,23 +231,37 @@ func (a *Account) doRefreshLocked(ctx context.Context) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", UserAgent)
+	req.Header.Set("anthropic-beta", betaHeader) // match the usage request, proven to work on this IP/token
 
 	resp, err := a.client.HTTP.Do(req)
 	if err != nil {
 		return fmt.Errorf("refresh token: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusTooManyRequests {
-		rl := &RateLimitedError{}
-		if secs, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && secs > 0 {
-			rl.RetryAfter = time.Duration(secs) * time.Second
-		}
-		a.setRefreshCooldownLocked(rl.RetryAfter)
-		return rl
-	}
 	if resp.StatusCode != http.StatusOK {
-		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("refresh token: %s: %s", resp.Status, strings.TrimSpace(string(msg)))
+		// Capture what the endpoint actually returned. A Cloudflare bot-block
+		// (cf-ray / cf-mitigated / Server: cloudflare, often an HTML body) and a
+		// genuine Anthropic rate_limit_error (JSON) both surface as 429 but need
+		// different fixes; logging the body+headers tells them apart.
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		slog.Warn("token refresh non-200",
+			"account", a.Name,
+			"status", resp.Status,
+			"retry_after", resp.Header.Get("Retry-After"),
+			"cf_ray", resp.Header.Get("Cf-Ray"),
+			"cf_mitigated", resp.Header.Get("Cf-Mitigated"),
+			"server", resp.Header.Get("Server"),
+			"body", strings.TrimSpace(string(snippet)),
+		)
+		if resp.StatusCode == http.StatusTooManyRequests {
+			rl := &RateLimitedError{}
+			if secs, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && secs > 0 {
+				rl.RetryAfter = time.Duration(secs) * time.Second
+			}
+			a.setRefreshCooldownLocked(rl.RetryAfter)
+			return rl
+		}
+		return fmt.Errorf("refresh token: %s: %s", resp.Status, strings.TrimSpace(string(snippet)))
 	}
 	var tr tokenResponse
 	if err := json.NewDecoder(resp.Body).Decode(&tr); err != nil {

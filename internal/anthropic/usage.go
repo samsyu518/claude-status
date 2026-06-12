@@ -23,7 +23,7 @@ const (
 	ClientID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
 	// UserAgent must look like Claude Code; other agents get persistent 429s.
-	UserAgent = "claude-code/2.1.173"
+	UserAgent = "claude-code/2.1.175"
 
 	betaHeader = "oauth-2025-04-20"
 )

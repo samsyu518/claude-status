@@ -203,6 +203,36 @@ func TestProactiveRefreshFailureFallsBackToValidToken(t *testing.T) {
 	}
 }
 
+// The refresh request must carry the same Claude-Code-identifying headers as the
+// usage request (proven to work on the same IP/token); a bare request gets the
+// token endpoint to flag/429 it.
+func TestRefreshSendsCLIHeaders(t *testing.T) {
+	var got http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"access_token": "new-access", "refresh_token": "new-refresh", "expires_in": 3600}`)
+	}))
+	defer srv.Close()
+
+	path := writeCreds(t, time.Now().Add(-time.Hour))
+	c := NewClient()
+	c.TokenURL = srv.URL
+	a, err := LoadAccount("test", path, c, false, refresh.New(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Token(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if h := got.Get("User-Agent"); h != UserAgent {
+		t.Errorf("User-Agent = %q, want %q", h, UserAgent)
+	}
+	if h := got.Get("anthropic-beta"); h != betaHeader {
+		t.Errorf("anthropic-beta = %q, want %q", h, betaHeader)
+	}
+}
+
 func TestTokenValidSkipsRefresh(t *testing.T) {
 	calls := 0
 	srv := tokenServer(t, &calls)
