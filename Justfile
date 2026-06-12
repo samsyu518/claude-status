@@ -28,6 +28,15 @@ login name:
 build:
     CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/claude-status .
 
+# 交叉編譯 Windows 執行檔 → bin/claude-status.exe
+build_win:
+    GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/claude-status.exe .
+
+# 交叉編譯 macOS 執行檔（Intel + Apple Silicon）→ bin/claude-status-darwin-{amd64,arm64}
+build_mac:
+    GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/claude-status-darwin-amd64 .
+    GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/claude-status-darwin-arm64 .
+
 # headless 後端開發模式（不 refresh token；log 寫到 ./log/claude-status.log）
 run *flags:
     go run . serve --no-refresh {{flags}}
