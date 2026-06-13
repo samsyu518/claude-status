@@ -1,6 +1,8 @@
 # claude-status
 
-自架的 Claude 訂閱用量儀表板，可在**瀏覽器或終端機**同時監看**多個帳號**的用量。
+**一眼看完所有 Claude 訂閱帳號的用量。**
+
+用訂閱方案（OAuth）登入 Claude Code 時，`/status` 屬於 inference-only scope，**看不到剩餘用量與重置時間** — 只能自己上 claude.ai → Settings → Usage 一個帳號一個帳號慢慢查。`claude-status` 是自架的儀表板，把每個帳號、每個速率限制視窗的即時用量，集中顯示在瀏覽器或終端機。
 
 [English](README.md)
 
@@ -18,12 +20,32 @@
 
 ## 為何需要此工具
 
-[Claude Code](https://claude.com/claude-code) 每個登入 session 只儲存一個 OAuth 登入，因此沒有方便的方式同時盯著多個 Claude 訂閱的用量。`claude-status` 獨立管理每個帳號的憑證，並把它們全部顯示在同一個儀表板：
+我在同一台機器上用多個 Claude 訂閱帳號（一個私人帳號、一個工作用帳號）—— 做法是每個帳號各產生一個長期 OAuth token，再用 shell alias 切換：
+
+```sh
+claude setup-token             # 印出長期 OAuth token，每個帳號跑一次
+mkdir -p ~/.claude-tokens && chmod 700 ~/.claude-tokens
+printf %s '貼上私人帳號 token' > ~/.claude-tokens/personal
+printf %s '貼上工作用帳號 token' > ~/.claude-tokens/work
+chmod 600 ~/.claude-tokens/*
+
+# 決定每次 `claude` 用哪個帳號
+alias personal='CLAUDE_CODE_OAUTH_TOKEN="$(cat ~/.claude-tokens/personal)" claude'
+alias work='CLAUDE_CODE_OAUTH_TOKEN="$(cat ~/.claude-tokens/work)" claude'
+```
+
+> **實測坑：** 若 `~/.claude/.credentials.json` 存在（互動式 `/login` 留下的），它會**蓋過** `CLAUDE_CODE_OAUTH_TOKEN`，讓所有 alias 都被綁到那一個帳號 —— 與官方文件標示的優先序相反。解法：`mv ~/.claude/.credentials.json{,.bak}`，之後別再於 `~/.claude` 跑 `/login`。*（實測行為，可能隨 Claude Code 版本變動。）*
+
+問題就出在這裡：用這種方式（訂閱 / OAuth）登入後，**`/status` 屬於 inference-only scope，看不到剩餘用量與重置時間**。內建唯一能查的方式只有 claude.ai → Settings → Usage，而且一次只能看一個帳號。
+
+`claude-status` 就是為了解決這件事。它獨立管理每個帳號的憑證，把它們全部顯示在同一個儀表板：
 
 - **每個帳號一個獨立的 OAuth grant** — 帳號之間不會發生 single-use token 碰撞
 - **即時用量**，涵蓋每個速率限制視窗（5h / 7d / Opus / Sonnet）
 - **網頁儀表板 + 可選的終端 UI**
-- **唯讀、零推論額度消耗** — 它呼叫的是 Claude Code 用來顯示你額度的*同一個* `GET /api/oauth/usage` 端點。不發送任何 prompt、不消耗額度，token 只留在 `127.0.0.1`。這裡的登入是獨立的 grant，不會干擾你日常的 Claude CLI 登入。
+- **唯讀、零推論額度消耗** — 它呼叫的是 Claude Code 用來顯示你額度的*同一個* `GET /api/oauth/usage` 端點。不發送任何 prompt、不消耗額度，token 只留在 `127.0.0.1`。
+
+> 上面的 alias 只是 CLI 切帳號用的。dashboard 取得憑證的方式不同 —— 每個帳號各跑一次拋棄式 `/login`（見下方步驟 1），而且是**各自獨立的** OAuth grant，兩者互不干擾。
 
 ## 系統需求
 
