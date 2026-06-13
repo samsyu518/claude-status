@@ -17,13 +17,21 @@ import (
 
 const (
 	DefaultUsageURL = "https://api.anthropic.com/api/oauth/usage"
-	DefaultTokenURL = "https://console.anthropic.com/v1/oauth/token"
+	// DefaultTokenURL is the OAuth token endpoint the current Claude CLI uses;
+	// it moved from console.anthropic.com (now deprecated, blanket-429s) to here.
+	DefaultTokenURL = "https://platform.claude.com/v1/oauth/token"
 
 	// ClientID is Claude Code's public PKCE OAuth client id (no secret).
 	ClientID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
-	// UserAgent must look like Claude Code; other agents get persistent 429s.
+	// UserAgent must look like Claude Code on the usage endpoint; other agents
+	// get persistent 429s there.
 	UserAgent = "claude-code/2.1.175"
+
+	// refreshUserAgent is what the token endpoint expects: the real CLI refreshes
+	// with axios's default UA. That endpoint 429s claude-code/* and curl/* UAs
+	// (the opposite of the usage endpoint), so the refresh must use this instead.
+	refreshUserAgent = "axios/1.15.2"
 
 	betaHeader = "oauth-2025-04-20"
 )

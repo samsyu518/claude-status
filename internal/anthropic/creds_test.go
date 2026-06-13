@@ -203,10 +203,10 @@ func TestProactiveRefreshFailureFallsBackToValidToken(t *testing.T) {
 	}
 }
 
-// The refresh request must carry the same Claude-Code-identifying headers as the
-// usage request (proven to work on the same IP/token); a bare request gets the
-// token endpoint to flag/429 it.
-func TestRefreshSendsCLIHeaders(t *testing.T) {
+// The refresh request must use the axios User-Agent the real CLI sends and must
+// NOT carry the claude-code UA / anthropic-beta header: the token endpoint 429s
+// those (the opposite of the usage endpoint).
+func TestRefreshSendsAxiosUA(t *testing.T) {
 	var got http.Header
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got = r.Header.Clone()
@@ -225,11 +225,11 @@ func TestRefreshSendsCLIHeaders(t *testing.T) {
 	if _, err := a.Token(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if h := got.Get("User-Agent"); h != UserAgent {
-		t.Errorf("User-Agent = %q, want %q", h, UserAgent)
+	if h := got.Get("User-Agent"); h != refreshUserAgent {
+		t.Errorf("User-Agent = %q, want %q", h, refreshUserAgent)
 	}
-	if h := got.Get("anthropic-beta"); h != betaHeader {
-		t.Errorf("anthropic-beta = %q, want %q", h, betaHeader)
+	if h := got.Get("anthropic-beta"); h != "" {
+		t.Errorf("anthropic-beta = %q, want empty (token endpoint 429s it)", h)
 	}
 }
 

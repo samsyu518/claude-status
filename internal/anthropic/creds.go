@@ -229,9 +229,12 @@ func (a *Account) doRefreshLocked(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// The token endpoint gates on User-Agent: it 429s claude-code/* and curl/*
+	// but accepts the axios UA the real CLI sends — and it does NOT want the
+	// anthropic-beta header the usage endpoint requires. Match the CLI exactly.
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", UserAgent)
-	req.Header.Set("anthropic-beta", betaHeader) // match the usage request, proven to work on this IP/token
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("User-Agent", refreshUserAgent)
 
 	resp, err := a.client.HTTP.Do(req)
 	if err != nil {
@@ -239,10 +242,8 @@ func (a *Account) doRefreshLocked(ctx context.Context) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		// Capture what the endpoint actually returned. A Cloudflare bot-block
-		// (cf-ray / cf-mitigated / Server: cloudflare, often an HTML body) and a
-		// genuine Anthropic rate_limit_error (JSON) both surface as 429 but need
-		// different fixes; logging the body+headers tells them apart.
+		// Capture what the endpoint actually returned so a future 429 is
+		// diagnosable (cf-ray / cf-mitigated / Server / body) without guesswork.
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		slog.Warn("token refresh non-200",
 			"account", a.Name,
