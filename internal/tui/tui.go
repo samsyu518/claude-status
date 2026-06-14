@@ -234,15 +234,10 @@ func resetClock(resetsAt, now time.Time, loc *time.Location, tzLabel string) str
 	nowLocal := now.In(loc)
 	sameDay := local.Year() == nowLocal.Year() && local.YearDay() == nowLocal.YearDay()
 	var layout string
-	switch {
-	case sameDay && local.Minute() == 0:
-		layout = "3pm"
-	case sameDay:
-		layout = "3:04pm"
-	case local.Minute() == 0:
-		layout = "Jan 2, 3pm"
-	default:
-		layout = "Jan 2, 3:04pm"
+	if sameDay {
+		layout = "3:04:05pm"
+	} else {
+		layout = "Jan 2, 3:04:05pm"
 	}
 	return local.Format(layout) + " (" + tzLabel + ")"
 }

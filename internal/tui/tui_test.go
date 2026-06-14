@@ -273,32 +273,32 @@ func TestResetClock(t *testing.T) {
 		{
 			name:     "same day, exact hour",
 			resetsAt: time.Date(2026, 6, 12, 16, 0, 0, 0, taipei),
-			want:     "4pm (Asia/Taipei)",
+			want:     "4:00:00pm (Asia/Taipei)",
 		},
 		{
 			name:     "same day, with minutes",
 			resetsAt: time.Date(2026, 6, 12, 16, 10, 0, 0, taipei),
-			want:     "4:10pm (Asia/Taipei)",
+			want:     "4:10:00pm (Asia/Taipei)",
 		},
 		{
 			name:     "different day, exact hour",
 			resetsAt: time.Date(2026, 6, 15, 4, 0, 0, 0, taipei),
-			want:     "Jun 15, 4am (Asia/Taipei)",
+			want:     "Jun 15, 4:00:00am (Asia/Taipei)",
 		},
 		{
 			name:     "different day, with minutes",
 			resetsAt: time.Date(2026, 6, 15, 4, 10, 0, 0, taipei),
-			want:     "Jun 15, 4:10am (Asia/Taipei)",
+			want:     "Jun 15, 4:10:00am (Asia/Taipei)",
 		},
 		{
 			name:     "next day midnight",
 			resetsAt: time.Date(2026, 6, 13, 0, 0, 0, 0, taipei),
-			want:     "Jun 13, 12am (Asia/Taipei)",
+			want:     "Jun 13, 12:00:00am (Asia/Taipei)",
 		},
 		{
 			name:     "cross year boundary",
 			resetsAt: time.Date(2027, 1, 1, 0, 0, 0, 0, taipei),
-			want:     "Jan 1, 12am (Asia/Taipei)",
+			want:     "Jan 1, 12:00:00am (Asia/Taipei)",
 		},
 	}
 	for _, tc := range cases {

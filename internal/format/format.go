@@ -33,21 +33,27 @@ func LevelOf(pct float64) Level {
 	}
 }
 
-// ResetsIn renders the countdown until a rate-limit window resets, rounded to
-// the minute.
+// ResetsIn renders the countdown until a rate-limit window resets, with second
+// precision for short durations (< 1h).
 func ResetsIn(t time.Time) string {
 	d := time.Until(t)
 	if d <= 0 {
 		return "resetting…"
 	}
-	d = d.Round(time.Minute)
+	if d >= time.Hour {
+		d = d.Round(time.Minute)
+	} else {
+		d = d.Round(time.Second)
+	}
 	switch {
 	case d >= 24*time.Hour:
 		return fmt.Sprintf("%dd %dh", int(d.Hours())/24, int(d.Hours())%24)
 	case d >= time.Hour:
 		return fmt.Sprintf("%dh %02dm", int(d.Hours()), int(d.Minutes())%60)
+	case d >= time.Minute:
+		return fmt.Sprintf("%dm %02ds", int(d.Minutes()), int(d.Seconds())%60)
 	default:
-		return fmt.Sprintf("%dm", int(d.Minutes()))
+		return fmt.Sprintf("%ds", int(d.Seconds()))
 	}
 }
 

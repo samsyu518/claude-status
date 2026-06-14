@@ -11,23 +11,42 @@
 <script src="/static/client-side-templates.js" defer></script>
 <script src="/static/mustache.min.js" defer></script>
 <script>
-function fmtResets() {
+function formatResetsIn(target, now) {
+  var diff = target - now;
+  if (diff <= 0) return 'resetting…';
+  var s = Math.floor(diff / 1000);
+  var m = Math.floor(s / 60);
+  var h = Math.floor(m / 60);
+  var d = Math.floor(h / 24);
+
+  if (d > 0) return d + 'd ' + (h % 24) + 'h';
+  if (h > 0) return h + 'h ' + (m % 60).toString().padStart(2, '0') + 'm';
+  if (m > 0) return m + 'm ' + (s % 60).toString().padStart(2, '0') + 's';
+  return s + 's';
+}
+function tick() {
+  var now = new Date();
   var tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   document.querySelectorAll('[data-resets-at]').forEach(function(el) {
     var d = new Date(el.dataset.resetsAt);
     if (isNaN(d)) return;
-    var now = new Date();
     var sameDay = d.getFullYear() === now.getFullYear() &&
                   d.getMonth()    === now.getMonth()    &&
                   d.getDate()     === now.getDate();
-    var opts = {hour: 'numeric'};
+    var opts = {hour: 'numeric', minute: '2-digit', second: '2-digit'};
     if (!sameDay) { opts.month = 'short'; opts.day = 'numeric'; }
-    if (d.getMinutes() !== 0) opts.minute = '2-digit';
     el.textContent = 'resets ' + new Intl.DateTimeFormat([], opts).format(d) + ' (' + tz + ')';
+
+    var row = el.previousElementSibling;
+    if (row && row.classList.contains('row')) {
+      var resetSpan = row.querySelector('.reset');
+      if (resetSpan) resetSpan.textContent = formatResetsIn(d, now);
+    }
   });
 }
-document.addEventListener('DOMContentLoaded', fmtResets);
-document.addEventListener('htmx:wsAfterMessage', fmtResets);
+document.addEventListener('DOMContentLoaded', tick);
+document.addEventListener('htmx:wsAfterMessage', tick);
+setInterval(tick, 1000);
 </script>
 </head>
 <body>

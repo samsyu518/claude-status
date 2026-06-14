@@ -71,7 +71,7 @@ func appendRow(rows []Row, label string, w *store.Window) []Row {
 		Class:       levelClass(w.Utilization),
 		Pct:         fmt.Sprintf("%.0f%%", w.Utilization),
 		ResetsIn:    format.ResetsIn(w.ResetsAt),
-		ResetsAt:    w.ResetsAt.Local().Format("Mon 15:04"),
+		ResetsAt:    w.ResetsAt.Local().Format("Mon 15:04:05"),
 		ResetsAtISO: w.ResetsAt.UTC().Format(time.RFC3339),
 	})
 }
