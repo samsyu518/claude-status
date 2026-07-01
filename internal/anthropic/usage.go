@@ -49,12 +49,43 @@ type ExtraUsage struct {
 	Utilization  *float64 `json:"utilization"`
 }
 
+// ModelScope names the model a Limit is scoped to (e.g. "Opus", "Fable").
+type ModelScope struct {
+	DisplayName string `json:"display_name"`
+}
+
+type LimitScope struct {
+	Model *ModelScope `json:"model"`
+}
+
+// Limit is one entry in /api/oauth/usage's "limits" array — the
+// forward-compatible replacement for fixed per-model fields like the old
+// seven_day_opus/seven_day_sonnet (both went permanently null once this
+// shipped). Each model (Opus, Sonnet, Fable, ...) now shows up as its own
+// entry via Scope.Model instead of a named field, so a new model needs no
+// code change here — only entries with a model scope produce a per-model
+// row; ResetsAt is zero until the account actually has a tracked window for
+// that model this period.
+type Limit struct {
+	Percent  float64     `json:"percent"`
+	ResetsAt time.Time   `json:"resets_at"`
+	Scope    *LimitScope `json:"scope"`
+}
+
+// ModelName returns the scoped model's display name (e.g. "Fable"), or ""
+// if this limit isn't scoped to a specific model.
+func (l Limit) ModelName() string {
+	if l.Scope == nil || l.Scope.Model == nil {
+		return ""
+	}
+	return l.Scope.Model.DisplayName
+}
+
 type Usage struct {
-	FiveHour       *Window     `json:"five_hour"`
-	SevenDay       *Window     `json:"seven_day"`
-	SevenDayOpus   *Window     `json:"seven_day_opus"`
-	SevenDaySonnet *Window     `json:"seven_day_sonnet"`
-	ExtraUsage     *ExtraUsage `json:"extra_usage"`
+	FiveHour   *Window     `json:"five_hour"`
+	SevenDay   *Window     `json:"seven_day"`
+	Limits     []Limit     `json:"limits"`
+	ExtraUsage *ExtraUsage `json:"extra_usage"`
 }
 
 // ErrUnauthorized signals the access token was rejected and a refresh should

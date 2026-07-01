@@ -54,8 +54,9 @@ func Build(snaps []store.Snapshot) Data {
 		}
 		card.Rows = appendRow(card.Rows, "5h", s.FiveHour)
 		card.Rows = appendRow(card.Rows, "7d", s.SevenDay)
-		card.Rows = appendRow(card.Rows, "7d Opus", s.SevenDayOpus)
-		card.Rows = appendRow(card.Rows, "7d Sonnet", s.SevenDaySonnet)
+		for _, mw := range s.ModelWindows {
+			card.Rows = appendRow(card.Rows, "7d "+mw.Name, &store.Window{Utilization: mw.Utilization, ResetsAt: mw.ResetsAt})
+		}
 		v.Cards = append(v.Cards, card)
 	}
 	return v
@@ -65,15 +66,23 @@ func appendRow(rows []Row, label string, w *store.Window) []Row {
 	if w == nil {
 		return rows
 	}
-	return append(rows, Row{
-		Label:       label,
-		Value:       int(w.Utilization + 0.5),
-		Class:       levelClass(w.Utilization),
-		Pct:         fmt.Sprintf("%.0f%%", w.Utilization),
-		ResetsIn:    format.ResetsIn(w.ResetsAt),
-		ResetsAt:    w.ResetsAt.Local().Format("Mon 15:04:05"),
-		ResetsAtISO: w.ResetsAt.UTC().Format(time.RFC3339),
-	})
+	row := Row{
+		Label: label,
+		Value: int(w.Utilization + 0.5),
+		Class: levelClass(w.Utilization),
+		Pct:   fmt.Sprintf("%.0f%%", w.Utilization),
+	}
+	// A model-scoped window can exist with no ResetsAt yet — the account has
+	// access to it but hasn't used it this period, so upstream hasn't started
+	// a reset schedule for it.
+	if w.ResetsAt.IsZero() {
+		row.ResetsIn = "not started"
+	} else {
+		row.ResetsIn = format.ResetsIn(w.ResetsAt)
+		row.ResetsAt = w.ResetsAt.Local().Format("Mon 15:04:05")
+		row.ResetsAtISO = w.ResetsAt.UTC().Format(time.RFC3339)
+	}
+	return append(rows, row)
 }
 
 func levelClass(pct float64) string {

@@ -3,6 +3,7 @@
 package store
 
 import (
+	"sort"
 	"sync"
 	"time"
 
@@ -21,20 +22,27 @@ type ExtraUsage struct {
 	Utilization  *float64 `json:"utilization"`
 }
 
+// ModelWindow is one model-scoped weekly window (Opus, Sonnet, Fable, ...),
+// derived from anthropic.Usage.Limits.
+type ModelWindow struct {
+	Name        string    `json:"name"`
+	Utilization float64   `json:"utilization"`
+	ResetsAt    time.Time `json:"resetsAt"`
+}
+
 // Snapshot is one account's latest state. Usage fields are from the last
 // successful fetch (FetchedAt); Error is the latest failure, if any — the
 // stale usage data is intentionally kept alongside it.
 type Snapshot struct {
-	Name             string      `json:"name"`
-	SubscriptionType string      `json:"subscriptionType,omitempty"`
-	FiveHour         *Window     `json:"fiveHour"`
-	SevenDay         *Window     `json:"sevenDay"`
-	SevenDayOpus     *Window     `json:"sevenDayOpus"`
-	SevenDaySonnet   *Window     `json:"sevenDaySonnet"`
-	ExtraUsage       *ExtraUsage `json:"extraUsage"`
-	FetchedAt        time.Time   `json:"fetchedAt,omitzero"`
-	Error            string      `json:"error,omitempty"`
-	ErrorAt          time.Time   `json:"errorAt,omitzero"`
+	Name             string        `json:"name"`
+	SubscriptionType string        `json:"subscriptionType,omitempty"`
+	FiveHour         *Window       `json:"fiveHour"`
+	SevenDay         *Window       `json:"sevenDay"`
+	ModelWindows     []ModelWindow `json:"modelWindows"`
+	ExtraUsage       *ExtraUsage   `json:"extraUsage"`
+	FetchedAt        time.Time     `json:"fetchedAt,omitzero"`
+	Error            string        `json:"error,omitempty"`
+	ErrorAt          time.Time     `json:"errorAt,omitzero"`
 }
 
 type Store struct {
@@ -64,8 +72,7 @@ func (s *Store) SetUsage(name, subscriptionType string, u *anthropic.Usage) {
 	snap.SubscriptionType = subscriptionType
 	snap.FiveHour = window(u.FiveHour)
 	snap.SevenDay = window(u.SevenDay)
-	snap.SevenDayOpus = window(u.SevenDayOpus)
-	snap.SevenDaySonnet = window(u.SevenDaySonnet)
+	snap.ModelWindows = modelWindows(u.Limits)
 	snap.ExtraUsage = extra(u.ExtraUsage)
 	snap.FetchedAt = time.Now()
 	snap.Error = ""
@@ -155,4 +162,21 @@ func extra(x *anthropic.ExtraUsage) *ExtraUsage {
 		UsedCredits:  x.UsedCredits,
 		Utilization:  x.Utilization,
 	}
+}
+
+// modelWindows derives one row per model-scoped limit — shown as soon as the
+// account has that model scope at all, even before it has any usage this
+// period (ResetsAt zero then; view.appendRow renders that as "not started"
+// instead of a bogus countdown).
+func modelWindows(limits []anthropic.Limit) []ModelWindow {
+	var out []ModelWindow
+	for _, l := range limits {
+		name := l.ModelName()
+		if name == "" {
+			continue
+		}
+		out = append(out, ModelWindow{Name: name, Utilization: l.Percent, ResetsAt: l.ResetsAt})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }

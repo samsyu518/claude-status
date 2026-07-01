@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"flag"
@@ -38,10 +39,25 @@ import (
 )
 
 //go:embed web/templates/index.html
-var indexHTML []byte
+var rawIndexHTML []byte
+
+//go:embed web/templates/usage.html
+var usageCardHTML []byte
 
 //go:embed web/static
 var staticFS embed.FS
+
+// usageCardPlaceholder marks where the usage-card template (web/templates/usage.html)
+// gets spliced into index.html. A plain byte substitution — not html/template —
+// because the mustache {{ }} syntax in both files collides with Go's template engine.
+const usageCardPlaceholder = "<!--usage-card-->"
+
+var indexHTML = func() []byte {
+	if n := bytes.Count(rawIndexHTML, []byte(usageCardPlaceholder)); n != 1 {
+		panic(fmt.Sprintf("index.html: expected 1 %q placeholder, found %d", usageCardPlaceholder, n))
+	}
+	return bytes.Replace(rawIndexHTML, []byte(usageCardPlaceholder), usageCardHTML, 1)
+}()
 
 func main() {
 	args := os.Args[1:]

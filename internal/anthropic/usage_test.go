@@ -10,11 +10,23 @@ import (
 	"time"
 )
 
+// sampleUsage mirrors the real /api/oauth/usage shape as of 2026-07: the old
+// seven_day_opus/seven_day_sonnet fields are always null now, and per-model
+// weekly windows live in "limits" instead, one entry per model actually
+// tracked this period (Opus here has a null resets_at — never used, so it
+// carries no window yet).
 const sampleUsage = `{
   "five_hour":        {"utilization": 33.0, "resets_at": "2026-06-12T07:00:00+00:00"},
   "seven_day":        {"utilization": 13.0, "resets_at": "2026-06-17T00:59:59+00:00"},
   "seven_day_opus":   null,
-  "seven_day_sonnet": {"utilization": 1.0,  "resets_at": "2026-06-16T03:00:00+00:00"},
+  "seven_day_sonnet": null,
+  "limits": [
+    {"kind": "session",       "percent": 33, "resets_at": "2026-06-12T07:00:00+00:00", "is_active": true},
+    {"kind": "weekly_all",    "percent": 13, "resets_at": "2026-06-17T00:59:59+00:00", "is_active": false},
+    {"kind": "weekly_scoped", "percent": 1,  "resets_at": "2026-06-16T03:00:00+00:00", "is_active": false, "scope": {"model": {"display_name": "Sonnet"}}},
+    {"kind": "weekly_scoped", "percent": 5,  "resets_at": "2026-06-16T05:00:00+00:00", "is_active": false, "scope": {"model": {"display_name": "Fable"}}},
+    {"kind": "weekly_scoped", "percent": 0,  "resets_at": null, "is_active": false, "scope": {"model": {"display_name": "Opus"}}}
+  ],
   "extra_usage":      {"is_enabled": false, "monthly_limit": null, "used_credits": null, "utilization": null}
 }`
 
@@ -54,11 +66,28 @@ func TestFetchUsage(t *testing.T) {
 	if u.SevenDay == nil || u.SevenDay.Utilization != 13.0 {
 		t.Errorf("SevenDay = %+v", u.SevenDay)
 	}
-	if u.SevenDayOpus != nil {
-		t.Errorf("SevenDayOpus = %+v, want nil", u.SevenDayOpus)
+	if len(u.Limits) != 5 {
+		t.Fatalf("Limits = %d entries, want 5", len(u.Limits))
 	}
-	if u.SevenDaySonnet == nil || u.SevenDaySonnet.Utilization != 1.0 {
-		t.Errorf("SevenDaySonnet = %+v", u.SevenDaySonnet)
+	var sonnet, fable, opus *Limit
+	for i := range u.Limits {
+		switch u.Limits[i].ModelName() {
+		case "Sonnet":
+			sonnet = &u.Limits[i]
+		case "Fable":
+			fable = &u.Limits[i]
+		case "Opus":
+			opus = &u.Limits[i]
+		}
+	}
+	if sonnet == nil || sonnet.Percent != 1 || sonnet.ResetsAt.IsZero() {
+		t.Errorf("Sonnet limit = %+v", sonnet)
+	}
+	if fable == nil || fable.Percent != 5 || fable.ResetsAt.IsZero() {
+		t.Errorf("Fable limit = %+v", fable)
+	}
+	if opus == nil || !opus.ResetsAt.IsZero() {
+		t.Errorf("Opus limit = %+v, want zero ResetsAt (unused this period)", opus)
 	}
 	if u.ExtraUsage == nil || u.ExtraUsage.IsEnabled {
 		t.Errorf("ExtraUsage = %+v", u.ExtraUsage)

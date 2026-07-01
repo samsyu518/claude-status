@@ -58,6 +58,29 @@ func TestErrorKeepsLastGoodData(t *testing.T) {
 	}
 }
 
+func TestSetUsageModelWindows(t *testing.T) {
+	st := New([]string{"a"})
+	resetsAt := time.Date(2026, 7, 6, 23, 59, 59, 0, time.UTC)
+	st.SetUsage("a", "max", &anthropic.Usage{
+		Limits: []anthropic.Limit{
+			{Percent: 8}, // session, no model scope: not a model row
+			{Percent: 1, Scope: &anthropic.LimitScope{Model: &anthropic.ModelScope{DisplayName: "Sonnet"}}, ResetsAt: resetsAt},
+			{Percent: 0, Scope: &anthropic.LimitScope{Model: &anthropic.ModelScope{DisplayName: "Fable"}}}, // unused this period: no ResetsAt yet
+		},
+	})
+
+	mw := st.Snapshots()[0].ModelWindows
+	if len(mw) != 2 {
+		t.Fatalf("ModelWindows = %+v, want 2 entries", mw)
+	}
+	if mw[0].Name != "Fable" || mw[0].Utilization != 0 || !mw[0].ResetsAt.IsZero() {
+		t.Errorf("Fable = %+v", mw[0])
+	}
+	if mw[1].Name != "Sonnet" || mw[1].Utilization != 1 || !mw[1].ResetsAt.Equal(resetsAt) {
+		t.Errorf("Sonnet = %+v", mw[1])
+	}
+}
+
 func TestSubscribeDelivers(t *testing.T) {
 	st := New([]string{"a"})
 	ch, cancel := st.Subscribe()

@@ -61,37 +61,6 @@ setInterval(tick, 1000);
      mustache-template="usage-tmpl">
   <div id="usage" class="muted" style="padding:1rem 1.5rem">connecting…</div>
 </div>
-<template id="usage-tmpl">
-<div id="usage" class="cards">
-{{#cards}}
-<article class="card account-card">
-  <div class="card-body">
-    <h2 class="card-title">
-      {{name}}
-      {{#subType}}<span class="badge badge-primary badge-soft">{{subType}}</span>{{/subType}}
-      {{#error}}<span class="badge badge-error" title="{{error}}">error</span>{{/error}}
-    </h2>
-    {{#pending}}
-      {{#error}}<p class="muted">fetch failed: {{error}}</p>{{/error}}
-      {{^error}}<p class="muted">waiting for first fetch…</p>{{/error}}
-    {{/pending}}
-    {{^pending}}
-      {{#rows}}
-      <div class="row" title="resets {{resetsAt}}">
-        <span class="label">{{label}}</span>
-        <progress class="progress {{class}}" value="{{value}}" max="100"></progress>
-        <span class="pct">{{pct}}</span>
-        <span class="muted reset">{{resetsIn}}</span>
-      </div>
-      <p class="muted row-resets" data-resets-at="{{resetsAtISO}}"></p>
-      {{/rows}}
-      {{#extra}}<p class="muted">{{extra}}</p>{{/extra}}
-      <p class="muted">updated {{fetchedAt}}{{#error}} — showing last good data{{/error}}</p>
-    {{/pending}}
-  </div>
-</article>
-{{/cards}}
-</div>
-</template>
+<!--usage-card-->
 </body>
 </html>
