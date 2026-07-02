@@ -8,8 +8,10 @@ import (
 	"bytes"
 	"context"
 	"embed"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"html/template"
 	"io"
 	"io/fs"
 	"log"
@@ -38,26 +40,13 @@ import (
 	"go-gin-claude-status/internal/view"
 )
 
-//go:embed web/templates/index.html
-var rawIndexHTML []byte
+//go:embed web/templates/*.html
+var templatesFS embed.FS
 
-//go:embed web/templates/usage.html
-var usageCardHTML []byte
+var pageTmpl = template.Must(template.ParseFS(templatesFS, "web/templates/*.html"))
 
 //go:embed web/static
 var staticFS embed.FS
-
-// usageCardPlaceholder marks where the usage-card template (web/templates/usage.html)
-// gets spliced into index.html. A plain byte substitution — not html/template —
-// because the mustache {{ }} syntax in both files collides with Go's template engine.
-const usageCardPlaceholder = "<!--usage-card-->"
-
-var indexHTML = func() []byte {
-	if n := bytes.Count(rawIndexHTML, []byte(usageCardPlaceholder)); n != 1 {
-		panic(fmt.Sprintf("index.html: expected 1 %q placeholder, found %d", usageCardPlaceholder, n))
-	}
-	return bytes.Replace(rawIndexHTML, []byte(usageCardPlaceholder), usageCardHTML, 1)
-}()
 
 func main() {
 	args := os.Args[1:]
@@ -303,64 +292,26 @@ func newRouter(st *store.Store, refresh func()) *gin.Engine {
 	r.StaticFS("/static", http.FS(staticSub))
 
 	r.GET("/", func(c *gin.Context) {
-		c.Data(http.StatusOK, "text/html; charset=utf-8", indexHTML)
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		if err := pageTmpl.ExecuteTemplate(c.Writer, "index.html", view.Build(st.Snapshots())); err != nil {
+			slog.Error("render index", "err", err)
+		}
 	})
 	r.POST("/api/refresh", func(c *gin.Context) {
 		refresh()
 		c.Status(http.StatusAccepted)
 	})
 	r.GET("/ws", func(c *gin.Context) {
-		conn, err := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-
-		ch, cancel := st.Subscribe()
-		defer cancel()
-
-		// Send the current state immediately so the client isn't blank.
-		if err := conn.WriteJSON(view.Build(st.Snapshots())); err != nil {
-			return
-		}
-
-		// Drain reads so the WS library processes close/pong frames.
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			for {
-				if _, _, err := conn.ReadMessage(); err != nil {
-					return
-				}
-			}
-		}()
-
-		pingTick := time.NewTicker(30 * time.Second)
-		defer pingTick.Stop()
-
-		for {
-			select {
-			case <-done:
-				return
-			case <-c.Request.Context().Done():
-				return
-			case snaps, ok := <-ch:
-				if !ok {
-					return
-				}
-				conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-				if err := conn.WriteJSON(view.Build(snaps)); err != nil {
-					return
-				}
-				conn.SetWriteDeadline(time.Time{})
-			case <-pingTick.C:
-				conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-					return
-				}
-				conn.SetWriteDeadline(time.Time{})
-			}
-		}
+		serveWS(c, st, func(snaps []store.Snapshot) ([]byte, error) {
+			return json.Marshal(view.Build(snaps))
+		})
+	})
+	r.GET("/ws/html", func(c *gin.Context) {
+		serveWS(c, st, func(snaps []store.Snapshot) ([]byte, error) {
+			var buf bytes.Buffer
+			err := pageTmpl.ExecuteTemplate(&buf, "usage", view.Build(snaps))
+			return buf.Bytes(), err
+		})
 	})
 	r.GET("/api/usage", func(c *gin.Context) {
 		c.JSON(http.StatusOK, st.Snapshots())
@@ -369,4 +320,71 @@ func newRouter(st *store.Store, refresh func()) *gin.Engine {
 		c.String(http.StatusOK, "ok")
 	})
 	return r
+}
+
+// serveWS upgrades to a WebSocket, sends the current snapshot immediately,
+// then pushes on every store broadcast and pings every 30s. encode controls
+// the wire format: JSON for /ws (consumed by the TUI's ReadJSON), rendered
+// HTML for /ws/html (consumed by the browser's morphdom-swap OOB update).
+func serveWS(c *gin.Context, st *store.Store, encode func([]store.Snapshot) ([]byte, error)) {
+	conn, err := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	ch, cancel := st.Subscribe()
+	defer cancel()
+
+	send := func(snaps []store.Snapshot) error {
+		b, err := encode(snaps)
+		if err != nil {
+			return err
+		}
+		conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		err = conn.WriteMessage(websocket.TextMessage, b)
+		conn.SetWriteDeadline(time.Time{})
+		return err
+	}
+
+	// Send the current state immediately so the client isn't blank.
+	if err := send(st.Snapshots()); err != nil {
+		return
+	}
+
+	// Drain reads so the WS library processes close/pong frames.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+
+	pingTick := time.NewTicker(30 * time.Second)
+	defer pingTick.Stop()
+
+	for {
+		select {
+		case <-done:
+			return
+		case <-c.Request.Context().Done():
+			return
+		case snaps, ok := <-ch:
+			if !ok {
+				return
+			}
+			if err := send(snaps); err != nil {
+				return
+			}
+		case <-pingTick.C:
+			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+			conn.SetWriteDeadline(time.Time{})
+		}
+	}
 }

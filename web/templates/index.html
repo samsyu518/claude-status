@@ -8,8 +8,8 @@
 <link rel="stylesheet" href="/static/app.css">
 <script src="/static/htmx.min.js" defer></script>
 <script src="/static/ws.js" defer></script>
-<script src="/static/client-side-templates.js" defer></script>
-<script src="/static/mustache.min.js" defer></script>
+<script src="/static/morphdom.min.js" defer></script>
+<script src="/static/morphdom-swap.js" defer></script>
 <script>
 function formatResetsIn(target, now) {
   var diff = target - now;
@@ -56,11 +56,8 @@ setInterval(tick, 1000);
           hx-on:htmx:before-request="this.disabled=true;this.textContent='refreshing…'"
           hx-on:htmx:after-request="this.disabled=false;this.textContent='refresh'">refresh</button>
 </header>
-<div hx-ext="ws,client-side-templates"
-     ws-connect="/ws"
-     mustache-template="usage-tmpl">
-  <div id="usage" class="muted" style="padding:1rem 1.5rem">connecting…</div>
+<div hx-ext="ws,morphdom-swap" ws-connect="/ws/html">
+{{template "usage" .}}
 </div>
-<!--usage-card-->
 </body>
 </html>
