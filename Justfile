@@ -9,8 +9,8 @@ vendor:
     curl -fsSL -o web/static/htmx.min.js "https://unpkg.com/htmx.org@2/dist/htmx.min.js"
     curl -fsSL -o web/static/daisyui.css "https://cdn.jsdelivr.net/npm/daisyui@5/daisyui.css"
     curl -fsSL -o web/static/ws.js "https://unpkg.com/htmx-ext-ws@2/dist/ws.js"
-    curl -fsSL -o web/static/client-side-templates.js "https://unpkg.com/htmx-ext-client-side-templates@2/dist/client-side-templates.js"
-    curl -fsSL -o web/static/mustache.min.js "https://unpkg.com/mustache@4/mustache.min.js"
+    curl -fsSL -o web/static/morphdom.min.js "https://unpkg.com/morphdom@2/dist/morphdom-umd.min.js"
+    curl -fsSL -o web/static/morphdom-swap.js "https://unpkg.com/htmx-ext-morphdom-swap@2/dist/morphdom-swap.js"
 
 # docker 沙箱登入一個帳號；憑證落在 accounts/<name>/.credentials.json
 login name:
